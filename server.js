@@ -5971,3 +5971,58 @@ module.exports = {
  prepareNumericValue,
  prepareBooleanValue
 };
+
+// --- BEGIN: Vendor Selection API ---
+
+/**
+ * API: Get all ledgers with their name, parent group, and GSTIN (for vendor selection dropdown)
+ */
+app.get('/api/ledgers/vendors', async (req, res) => {
+    try {
+        // Load the master ledger file (if not already loaded)
+        await ledgerStandardizer.loadLedgerMaster();
+        const ledgerMasterPath = './Ledger extractionV2/TallyData_Complete_latest.xlsx';
+        const sheetName = '📋 Ledgers';
+        if (!fs.existsSync(ledgerMasterPath)) {
+            return res.status(404).json({ error: 'Ledger master file not found' });
+        }
+        const workbook = XLSX.readFile(ledgerMasterPath);
+        if (!workbook.SheetNames.includes(sheetName)) {
+            return res.status(404).json({ error: `Sheet '${sheetName}' not found` });
+        }
+        const worksheet = workbook.Sheets[sheetName];
+        const ledgerData = XLSX.utils.sheet_to_json(worksheet);
+        // Only return ledgers with parent group Sundry Creditors or Sundry Creditors for Expenses
+        const filtered = ledgerData.filter(l => {
+            const parent = (l['Parent Group'] || '').toLowerCase();
+            return parent === 'sundry creditors' || parent === 'sundry creditors for expenses';
+        }).map(l => ({
+            name: l['Ledger Name'],
+            parent: l['Parent Group'],
+            gstin: l['GSTN'] || '',
+        }));
+        res.json(filtered);
+    } catch (err) {
+        console.error('Failed to load ledgers for vendor selection:', err);
+        res.status(500).json({ error: 'Failed to load ledgers for vendor selection' });
+    }
+});
+// --- END: Vendor Selection API ---
+
+// --- BEGIN: Update selected vendor for an expense ---
+app.post('/api/expenses/:id/vendor', (req, res) => {
+    const expenseId = req.params.id;
+    const { vendor_name } = req.body;
+    if (!vendor_name) {
+        return res.status(400).json({ error: 'vendor_name is required' });
+    }
+    const sql = 'UPDATE expenses SET vendor_name = ? WHERE id = ?';
+    db.run(sql, [vendor_name, expenseId], function (err) {
+        if (err) {
+            console.error('Failed to update vendor for expense:', err);
+            return res.status(500).json({ error: 'Failed to update vendor' });
+        }
+        res.json({ success: true });
+    });
+});
+// --- END: Update selected vendor for an expense ---

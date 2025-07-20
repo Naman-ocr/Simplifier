@@ -3531,6 +3531,162 @@ console.log('📦 Server response:', result);
                 modal.remove();
             }
         }
+
+        // --- BEGIN: Vendor Selection Logic ---
+        let vendorLedgers = [];
+
+        async function loadVendorLedgers() {
+            try {
+                const res = await fetch('/api/ledgers/vendors');
+                vendorLedgers = await res.json();
+            } catch (e) {
+                vendorLedgers = [];
+            }
+        }
+
+        function findLedgerByGSTIN(gstin) {
+            if (!gstin) return null;
+            const match = vendorLedgers.find(l => l.gstin && l.gstin.replace(/\s+/g, '').toLowerCase() === gstin.replace(/\s+/g, '').toLowerCase());
+            return match ? match.name : null;
+        }
+
+        function getVendorDropdownOptions(selectedName) {
+            return vendorLedgers.map(l => `<option value="${l.name.replace(/"/g, '&quot;')}" ${l.name === selectedName ? 'selected' : ''}>${l.name} (${l.parent})</option>`).join('');
+        }
+
+        async function updateVendorForExpense(expenseId, vendorName) {
+            try {
+                await fetch(`/api/expenses/${expenseId}/vendor`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ vendor_name: vendorName })
+                });
+                showNotification('Success', 'Vendor updated', 'success');
+            } catch (e) {
+                showNotification('Error', 'Failed to update vendor', 'error');
+            }
+        }
+        // --- END: Vendor Selection Logic ---
+
+        // Patch displayReviewItems to add Vendor Selection
+        const originalDisplayReviewItems = displayReviewItems;
+        displayReviewItems = async function(items) {
+            await loadVendorLedgers();
+            const container = document.getElementById('review-items');
+            if (items.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-8">
+                        <i data-lucide="inbox" class="w-12 h-12 text-gray-400 mx-auto mb-4"></i>
+                        <p class="text-gray-500">No items pending review</p>
+                    </div>
+                `;
+                lucide.createIcons();
+                return;
+            }
+            container.innerHTML = items.map(item => {
+                // Vendor matching logic
+                let matchedLedger = findLedgerByGSTIN(item.vendor_gstn);
+                let displayVendor = matchedLedger || item.vendor_name || 'Unknown Vendor';
+                let dropdown = `<select class='border border-gray-300 rounded px-2 py-1 text-sm bg-white' onchange='updateVendorForExpense(${item.id}, this.value)'>` +
+                    `<option value="${displayVendor}">${displayVendor}</option>` +
+                    getVendorDropdownOptions(displayVendor) +
+                    `</select>`;
+                return `
+                <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                    <div class="p-6">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h3 class="text-lg font-semibold text-gray-900">
+                                    ${item.invoice_number || 'No Invoice Number'}
+                                </h3>
+                                <p class="text-gray-600">${item.vendor_name || 'Unknown Vendor'}</p>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="px-2 py-1 text-xs font-medium rounded-full ${getStatusBadgeClass(item.status)}">
+                                    ${item.status.replace('_', ' ').toUpperCase()}
+                                </span>
+                                <span class="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                                    ${Math.round((item.confidence_score || 0) * 100)}% Confidence
+                                </span>
+                                <span class="px-2 py-1 text-xs font-medium ${getVoucherTypeBadgeClass(item.voucher_type)} rounded-full">
+                                    ${item.voucher_type || 'Purchase'}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                            <div>
+                                <p class="text-sm text-gray-600">Date</p>
+                                <p class="font-medium">${formatDate(item.invoice_date)}</p>
+                            </div>
+                            <div>
+                                <p class="text-sm text-gray-600">Amount</p>
+                                <p class="font-medium">₹${(item.invoice_value || 0).toLocaleString()}</p>
+                            </div>
+                            <div>
+                                <p class="text-sm text-gray-600">Line Items</p>
+                                <p class="font-medium">${item.line_items_count || 0} items</p>
+                            </div>
+                            <div>
+                                <p class="text-sm text-gray-600">Entry Type</p>
+                                <p class="font-medium">${(item.entry_type || 'upload').replace('_', ' ')}</p>
+                            </div>
+                        </div>
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Vendor</label>
+                            <div class="flex items-center space-x-2">
+                                ${dropdown}
+                                <span class="text-xs text-gray-500">${item.vendor_gstn ? `GSTIN: ${item.vendor_gstn}` : ''}</span>
+                            </div>
+                        </div>
+                        ${item.line_items_count > 0 ? `
+                        <div class="mb-4">
+                            <button onclick="toggleLineItems(${item.id})" class="flex items-center text-blue-600 hover:text-blue-800 text-sm font-medium">
+                                <i data-lucide="chevron-right" class="w-4 h-4 mr-1 transform transition-transform" id="chevron-${item.id}"></i>
+                                View Line Items (${item.line_items_count})
+                            </button>
+                            <div id="line-items-${item.id}" class="hidden mt-3 bg-gray-50 rounded-lg p-4">
+                                <div class="overflow-x-auto">
+                                    <table class="min-w-full text-sm">
+                                        <thead>
+                                            <tr class="text-gray-600">
+                                                <th class="text-left py-2">Description</th>
+                                                <th class="text-left py-2">Qty</th>
+                                                <th class="text-left py-2">Rate</th>
+                                                <th class="text-left py-2">Amount</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${item.line_items.map(lineItem => `
+                                                <tr class="border-t border-gray-200">
+                                                    <td class="py-2">${lineItem.description || 'N/A'}</td>
+                                                    <td class="py-2">${lineItem.quantity || 0}</td>
+                                                    <td class="py-2">₹${(lineItem.unit_rate || 0).toFixed(2)}</td>
+                                                    <td class="py-2">₹${(lineItem.line_total || 0).toFixed(2)}</td>
+                                                </tr>
+                                            `).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        ` : ''}
+                        <div class="text-sm text-gray-500 processing-source processing-source-${item.processing_source || 'unknown'}">
+                            <span class="original-text">Processed via ${item.processing_source || 'unknown'} • </span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="editReviewItem(${item.id})" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700 transition-colors">
+                                <i data-lucide="edit" class="w-4 h-4 inline mr-1"></i>Edit
+                            </button>
+                            <button onclick="approveReviewItem(${item.id})" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors">
+                                <i data-lucide="check" class="w-4 h-4 inline mr-1"></i>Approve
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        };
     </script>
 </body>
 </html>
