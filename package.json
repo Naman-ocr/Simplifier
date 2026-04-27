@@ -1,7 +1,7 @@
 {
   "name": "simplifier-tally-automation",
   "version": "3.0.0",
-  "description": "Enhanced invoice processing with Parseur AI integration, Document AI fallback, and Strategy 1D validation",
+  "description": "Enhanced invoice processing with Claude AI as primary extractor, Document AI and OpenAI as fallbacks, and Tally ERP integration",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -26,6 +26,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@google-cloud/documentai": "^9.2.0",
     "axios": "^1.10.0",
     "cors": "^2.8.5",
@@ -50,14 +51,16 @@
   },
   "config": {
     "processing": {
-      "primary_processor": "parseur-ai",
+      "primary_processor": "claude-ai",
       "fallback_processor": "document-ai",
+      "secondary_fallback": "openai",
       "validation_strategy": "strategy-1d-progressive-fallback",
       "enhanced_features": [
         "cess-support",
         "round-off-handling",
         "force-mathematical-calculation",
-        "webhook-integration"
+        "gstin-validation",
+        "claude-vision-extraction"
       ]
     }
   }

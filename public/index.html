@@ -1904,7 +1904,13 @@ console.log('📦 Server response:', result);
                                 <p><strong>Vendor:</strong> ${expense.vendor_name || 'N/A'}</p>
                                 <p><strong>Amount:</strong> ₹${expense.invoice_value || 0}</p>
                                 <p><strong>Line Items:</strong> ${expense.line_items_count || 0}</p>
-                                                            </div>
+                                <p><strong>Source:</strong> ${expense.processing_source || 'claude'}</p>
+                            </div>
+                            <div class="mt-3">
+                                <button onclick="showTab('review'); loadReviewItems();" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors font-medium">
+                                    Review Invoice →
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2642,35 +2648,37 @@ console.log('📦 Server response:', result);
             const subtotal = currentLineItems.reduce((sum, item) => sum + (item.line_total || 0), 0);
             const totalTax = currentLineItems.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
             const grandTotal = subtotal + totalTax;
-            
-            // Update summary
+            const allAmountsZero = grandTotal === 0 && totalItems > 0;
+
+            // When line items have no amounts (e.g. insurance), show stored invoice total as reference
+            const storedInvoiceValue = parseFloat(document.getElementById('edit-invoice-value').value) || 0;
+            const storedTaxable = parseFloat(document.getElementById('edit-taxable-amount').value) || 0;
+
             document.getElementById('line-items-count').textContent = totalItems;
-            document.getElementById('line-items-subtotal').textContent = `₹${subtotal.toFixed(2)}`;
-            document.getElementById('line-items-total-tax').textContent = `₹${totalTax.toFixed(2)}`;
-            document.getElementById('line-items-grand-total').textContent = `₹${grandTotal.toFixed(2)}`;
-            
-            // Update main form values if line items exist
-            if (currentLineItems.length > 0) {
+            document.getElementById('line-items-subtotal').textContent = allAmountsZero
+                ? `₹${storedTaxable.toFixed(2)} (invoice)`
+                : `₹${subtotal.toFixed(2)}`;
+            document.getElementById('line-items-total-tax').textContent = allAmountsZero
+                ? `₹${(storedInvoiceValue - storedTaxable).toFixed(2)} (invoice)`
+                : `₹${totalTax.toFixed(2)}`;
+            document.getElementById('line-items-grand-total').textContent = allAmountsZero
+                ? `₹${storedInvoiceValue.toFixed(2)} (invoice)`
+                : `₹${grandTotal.toFixed(2)}`;
+
+            // Only overwrite Tax Details fields when line items actually have amounts
+            if (currentLineItems.length > 0 && !allAmountsZero) {
                 document.getElementById('edit-taxable-amount').value = subtotal.toFixed(2);
-                
-                // Calculate tax distribution based on line items
-                const totalTaxAmount = totalTax;
+
                 const igstAmount = parseFloat(document.getElementById('edit-igst-amount').value) || 0;
-                
                 if (igstAmount > 0) {
-                    // Interstate transaction - all tax goes to IGST
-                    document.getElementById('edit-igst-amount').value = totalTaxAmount.toFixed(2);
+                    document.getElementById('edit-igst-amount').value = totalTax.toFixed(2);
                     document.getElementById('edit-cgst-amount').value = '0';
                     document.getElementById('edit-sgst-amount').value = '0';
                 } else {
-                    // Intrastate transaction - split between CGST and SGST
-                    const cgstAmount = totalTaxAmount / 2;
-                    const sgstAmount = totalTaxAmount / 2;
-                    document.getElementById('edit-cgst-amount').value = cgstAmount.toFixed(2);
-                    document.getElementById('edit-sgst-amount').value = sgstAmount.toFixed(2);
+                    document.getElementById('edit-cgst-amount').value = (totalTax / 2).toFixed(2);
+                    document.getElementById('edit-sgst-amount').value = (totalTax / 2).toFixed(2);
                 }
-                
-                // Update invoice value
+
                 updateInvoiceValue();
             }
         }
@@ -3020,7 +3028,7 @@ console.log('📦 Server response:', result);
                 
                 if (result.success) {
                     if (result.line_items && result.line_items.length > 0) {
-                        displayLineItemsModal(result.line_items, invoiceId, result.voucher_type);
+                        displayLineItemsModal(result.line_items, invoiceId, result.voucher_type, result.invoice_totals);
                     } else {
                         // Show invoice details instead of line items
                         displayInvoiceDetailsModal(invoiceId);
@@ -3034,7 +3042,14 @@ console.log('📦 Server response:', result);
             }
         }
 
-        function displayLineItemsModal(lineItems, invoiceId, voucherType) {
+        function displayLineItemsModal(lineItems, invoiceId, voucherType, invoiceTotals) {
+            const allAmountsZero = lineItems.every(item => !(item.line_total > 0) && !(item.unit_rate > 0));
+            const totals = invoiceTotals || {};
+            const lineItemTotal = lineItems.reduce((sum, item) => sum + (item.line_total || 0), 0);
+            const lineItemTax = lineItems.reduce((sum, item) => sum + (item.tax_amount || 0), 0);
+            const displayTotal = lineItemTotal > 0 ? lineItemTotal : (totals.taxable_amount || 0);
+            const displayTax = lineItemTax > 0 ? lineItemTax : ((totals.igst_amount || 0) + (totals.cgst_amount || 0) + (totals.sgst_amount || 0));
+
             const modalHtml = `
                 <div id="line-items-view-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50">
                     <div class="flex items-center justify-center min-h-screen p-4">
@@ -3051,6 +3066,11 @@ console.log('📦 Server response:', result);
                                 </button>
                             </div>
                             <div class="p-6 max-h-[60vh] overflow-y-auto">
+                                ${allAmountsZero && totals.invoice_value > 0 ? `
+                                <div class="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700">
+                                    Individual item amounts not available (e.g. insurance/subscription). Invoice total: <strong>₹${(totals.invoice_value || 0).toFixed(2)}</strong>
+                                    (Taxable: ₹${(totals.taxable_amount || 0).toFixed(2)} + Tax: ₹${displayTax.toFixed(2)})
+                                </div>` : ''}
                                 <div class="overflow-x-auto">
                                     <table class="min-w-full divide-y divide-gray-200">
                                         <thead class="bg-gray-50">
@@ -3068,25 +3088,21 @@ console.log('📦 Server response:', result);
                                             ${lineItems.map(item => `
                                                 <tr>
                                                     <td class="px-3 py-3 text-sm text-gray-900">${item.description || 'N/A'}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-500">${item.hsn_code || 'N/A'}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.quantity || 0}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-900">₹${(item.unit_rate || 0).toFixed(2)}</td>
-                                                    <td class="px-3 py-3 text-sm font-medium text-gray-900">₹${(item.line_total || 0).toFixed(2)}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-500">${(item.tax_rate || 0)}%</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-900">₹${(item.tax_amount || 0).toFixed(2)}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-500">${item.hsn_code || item.hsn_sac || '-'}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.quantity || 1}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.unit_rate > 0 ? '₹' + (item.unit_rate).toFixed(2) : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm font-medium text-gray-900">${item.line_total > 0 ? '₹' + (item.line_total).toFixed(2) : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-500">${item.tax_rate > 0 ? item.tax_rate + '%' : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.tax_amount > 0 ? '₹' + (item.tax_amount).toFixed(2) : '-'}</td>
                                                 </tr>
                                             `).join('')}
                                         </tbody>
                                         <tfoot class="bg-gray-50">
                                             <tr>
                                                 <td colspan="4" class="px-3 py-3 text-sm font-medium text-gray-900 text-right">Totals:</td>
-                                                <td class="px-3 py-3 text-sm font-bold text-gray-900">
-                                                    ₹${lineItems.reduce((sum, item) => sum + (item.line_total || 0), 0).toFixed(2)}
-                                                </td>
+                                                <td class="px-3 py-3 text-sm font-bold text-gray-900">₹${displayTotal.toFixed(2)}</td>
                                                 <td class="px-3 py-3"></td>
-                                                <td class="px-3 py-3 text-sm font-bold text-gray-900">
-                                                    ₹${lineItems.reduce((sum, item) => sum + (item.tax_amount || 0), 0).toFixed(2)}
-                                                </td>
+                                                <td class="px-3 py-3 text-sm font-bold text-gray-900">₹${displayTax.toFixed(2)}</td>
                                             </tr>
                                         </tfoot>
                                     </table>
@@ -3538,7 +3554,8 @@ console.log('📦 Server response:', result);
         async function loadVendorLedgers() {
             try {
                 const res = await fetch('/api/ledgers/vendors');
-                vendorLedgers = await res.json();
+                const data = await res.json();
+                vendorLedgers = Array.isArray(data) ? data : [];
             } catch (e) {
                 vendorLedgers = [];
             }

@@ -7,6 +7,7 @@ const crypto = require('crypto'); // For SHA-256 hashing
 const { promisify } = require('util');
 const sqlite3 = require('sqlite3').verbose();
 const OpenAI = require('openai');
+const Anthropic = require('@anthropic-ai/sdk');
 const { DocumentProcessorServiceClient } = require('@google-cloud/documentai');
 const axios = require('axios');
 const FormData = require('form-data');
@@ -27,13 +28,16 @@ dayjs.extend(timezone);
 dayjs.extend(advancedFormat);
 dayjs.extend(localizedFormat);
 
-// Load environment variables
-require('dotenv').config();
+// Load environment variables (.env always wins over pre-existing empty system env vars)
+require('dotenv').config({ override: true });
 
 let sharp;
 let pdfToImg;
 let imageOptimizationAvailable = false;
 let pdfConversionAvailable = false;
+
+// canvas must be required BEFORE sharp on Windows to avoid DLL conflicts
+try { require('canvas'); } catch (_) {}
 
 // Load optional dependencies
 try {
@@ -50,10 +54,13 @@ const initializePdfConverter = async () => {
     try {
         const pdfModule = await import('pdf-to-img');
         pdfToImg = pdfModule.pdf;
+        if (typeof pdfToImg !== 'function') {
+            throw new Error(`pdf-to-img exported unexpected type: ${typeof pdfToImg}`);
+        }
         pdfConversionAvailable = true;
         console.log('✅ PDF conversion available');
     } catch (error) {
-        console.log('⚠️  PDF conversion not available');
+        console.log('⚠️  PDF conversion not available:', error.message);
         pdfConversionAvailable = false;
     }
 };
@@ -1641,6 +1648,12 @@ console.log(`🧾 DEBUG: Adding Ledger Entry:
 }
 
 // Configuration (kept private/internal)
+const CLAUDE_CONFIG = {
+ apiKey: process.env.ANTHROPIC_API_KEY,
+ model: 'claude-sonnet-4-6',
+ enabled: !!(process.env.ANTHROPIC_API_KEY)
+};
+
 const PARSEUR_CONFIG = {
  apiToken: process.env.PARSEUR_API_TOKEN,
  baseUrl: 'https://api.parseur.com',
@@ -1663,6 +1676,10 @@ const DOCUMENT_AI_CONFIG = {
 
 const openai = new OpenAI({
  apiKey: process.env.OPENAI_API_KEY
+});
+
+const anthropic = new Anthropic({
+ apiKey: process.env.ANTHROPIC_API_KEY
 });
 
 if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
@@ -3220,6 +3237,512 @@ class ParseurInvoiceProcessor {
  }
 }
 
+// 🗺️ GSTIN STATE CODE MAP
+const INDIAN_STATE_CODES = {
+ '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab',
+ '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana',
+ '07': 'Delhi', '08': 'Rajasthan', '09': 'Uttar Pradesh',
+ '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh',
+ '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram',
+ '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam',
+ '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha',
+ '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+ '26': 'Dadra & Nagar Haveli and Daman & Diu', '27': 'Maharashtra',
+ '28': 'Andhra Pradesh', '29': 'Karnataka', '30': 'Goa',
+ '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu',
+ '34': 'Puducherry', '35': 'Andaman & Nicobar Islands',
+ '36': 'Telangana', '37': 'Andhra Pradesh (New)', '38': 'Ladakh',
+ '97': 'Other Territory', '99': 'Centre Jurisdiction'
+};
+
+// 🔍 GSTIN VALIDATOR
+class GSTINValidator {
+ static GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+
+ static validate(gstin) {
+     if (!gstin || typeof gstin !== 'string') {
+         return { valid: false, error: 'GSTIN is empty or invalid type' };
+     }
+     const g = gstin.trim().toUpperCase();
+     if (g.length !== 15) {
+         return { valid: false, error: `GSTIN must be 15 characters, got ${g.length}` };
+     }
+     if (!this.GSTIN_PATTERN.test(g)) {
+         return { valid: false, error: 'GSTIN format invalid (expected: 2-digit state code + 10-char PAN + entity + Z + checksum)' };
+     }
+     const stateCode = g.substring(0, 2);
+     if (!INDIAN_STATE_CODES[stateCode]) {
+         return { valid: false, error: `Unknown GST state code: ${stateCode}` };
+     }
+     return { valid: true, stateCode, stateName: INDIAN_STATE_CODES[stateCode] };
+ }
+
+ // Best-effort: look for state/city keywords in the address string
+ static inferStateFromAddress(address) {
+     if (!address) return null;
+     const addr = address.toLowerCase();
+     for (const [, name] of Object.entries(INDIAN_STATE_CODES)) {
+         if (addr.includes(name.toLowerCase())) return name;
+     }
+     const cityMap = {
+         'delhi': 'Delhi', 'new delhi': 'Delhi',
+         'mumbai': 'Maharashtra', 'pune': 'Maharashtra', 'nagpur': 'Maharashtra',
+         'bangalore': 'Karnataka', 'bengaluru': 'Karnataka',
+         'chennai': 'Tamil Nadu', 'coimbatore': 'Tamil Nadu',
+         'hyderabad': 'Telangana', 'secunderabad': 'Telangana',
+         'kolkata': 'West Bengal',
+         'ahmedabad': 'Gujarat', 'surat': 'Gujarat', 'vadodara': 'Gujarat',
+         'jaipur': 'Rajasthan', 'jodhpur': 'Rajasthan',
+         'lucknow': 'Uttar Pradesh', 'noida': 'Uttar Pradesh', 'agra': 'Uttar Pradesh',
+         'chandigarh': 'Chandigarh',
+         'gurgaon': 'Haryana', 'gurugram': 'Haryana', 'faridabad': 'Haryana',
+         'bhopal': 'Madhya Pradesh', 'indore': 'Madhya Pradesh',
+         'patna': 'Bihar',
+         'bhubaneswar': 'Odisha',
+         'raipur': 'Chhattisgarh',
+         'guwahati': 'Assam',
+         'ranchi': 'Jharkhand',
+         'dehradun': 'Uttarakhand',
+         'thiruvananthapuram': 'Kerala', 'kochi': 'Kerala',
+         'visakhapatnam': 'Andhra Pradesh (New)'
+     };
+     for (const [city, state] of Object.entries(cityMap)) {
+         if (addr.includes(city)) return state;
+     }
+     return null;
+ }
+}
+
+// 🤖 CLAUDE AI INVOICE PROCESSOR — PRIMARY EXTRACTOR
+class ClaudeInvoiceProcessor {
+ constructor(config) {
+     this.config = config;
+     this.client = anthropic;
+ }
+
+ getMediaType(filePath) {
+     const ext = path.extname(filePath).toLowerCase();
+     const types = {
+         '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+         '.png': 'image/png', '.gif': 'image/gif',
+         '.webp': 'image/webp', '.bmp': 'image/jpeg',
+         '.tiff': 'image/jpeg', '.pdf': 'application/pdf'
+     };
+     return types[ext] || 'image/jpeg';
+ }
+
+ // All required fields must be present for extraction to be considered complete
+ isExtractionComplete(data) {
+     if (!data) return false;
+     const hasIdentifiers = !!(
+         data.vendor_name && data.vendor_name.trim() &&
+         data.invoice_number && data.invoice_number.trim() &&
+         data.invoice_date && data.invoice_date.trim()
+     );
+     // Accept either invoice_value OR taxable_amount (insurance docs use "Net Premium" etc.)
+     const hasAmount = (parseFloat(data.invoice_value) || 0) > 0 ||
+                       (parseFloat(data.taxable_amount) || 0) > 0;
+     return hasIdentifiers && hasAmount;
+ }
+
+ // Merge page-2+ data into the base extraction — prefer non-empty/non-zero values; concatenate line items
+ mergeExtractions(base, supplement) {
+     if (!supplement) return base;
+     const merged = { ...base };
+     for (const [key, val] of Object.entries(supplement)) {
+         if (key === 'line_items') {
+             const baseItems = Array.isArray(base.line_items) ? base.line_items : [];
+             const suppItems = Array.isArray(val) ? val : [];
+             merged.line_items = [...baseItems, ...suppItems];
+         } else if (typeof val === 'number') {
+             if ((!merged[key] || merged[key] === 0) && val !== 0) merged[key] = val;
+         } else if (typeof val === 'string') {
+             if ((!merged[key] || merged[key].trim() === '') && val && val.trim()) merged[key] = val;
+         }
+     }
+     return merged;
+ }
+
+ // Remove financial summary rows that Claude sometimes includes as line items
+ filterSummaryLineItems(lineItems) {
+     if (!Array.isArray(lineItems)) return [];
+     const summaryPattern = /^(net premium|gross premium|final premium|total premium|total od premium|total act premium|sub.?total|grand total|total amount|igst|cgst|sgst|gst\s*@|tax amount|round.?off|discount|total payable|amount payable|total tax|total gst)/i;
+     return lineItems.filter(item => {
+         const desc = (item.description || '').trim();
+         if (!desc) return false;
+         if (summaryPattern.test(desc)) {
+             console.log(`   🧹 Filtered summary row from line items: "${desc}"`);
+             return false;
+         }
+         return true;
+     });
+ }
+
+ getExtractionPrompt() {
+     return `You are an expert invoice data extraction system for Indian GST invoices. Extract ALL data from this invoice and return ONLY a single valid JSON object with no text before or after it.
+
+Required JSON structure:
+{
+  "vendor_name": "Full legal name of the supplier/seller",
+  "vendor_gstn": "Supplier GSTIN (15-character alphanumeric, uppercase) or empty string",
+  "vendor_address": "Complete supplier address as printed",
+  "customer_name": "Buyer/recipient company name",
+  "customer_gstn": "Buyer GSTIN if present, else empty string",
+  "invoice_number": "Invoice/bill number exactly as printed",
+  "invoice_date": "Invoice date in DD/MM/YYYY format",
+  "place_of_supply": "Place of supply state name",
+  "taxable_amount": <number: subtotal/base amount before tax. For insurance: "Net Premium" before GST. For services: amount before GST>,
+  "igst_amount": <number: IGST tax amount, 0 if not present>,
+  "igst_rate": <number: IGST rate %, 0 if not present>,
+  "cgst_amount": <number: CGST tax amount, 0 if not present>,
+  "cgst_rate": <number: CGST rate %, 0 if not present>,
+  "sgst_amount": <number: SGST/UTGST amount, 0 if not present>,
+  "sgst_rate": <number: SGST rate %, 0 if not present>,
+  "cess_amount": <number: CESS amount, 0 if not present>,
+  "cess_rate": <number: CESS rate %, 0 if not present>,
+  "tds_amount": <number: TDS deducted, 0 if not present>,
+  "tds_rate": <number: TDS rate %, 0 if not present>,
+  "round_off": <number: rounding adjustment (can be negative), 0 if not present>,
+  "invoice_value": <number: grand total including all taxes. For insurance: use "Final Premium", "Gross Premium", or "Total Amount Payable". For utilities: use "Total Amount Due". For any document: the largest/final payable amount>,
+  "description": "Primary product or service description",
+  "hsn_sac_code": "HSN or SAC code (primary item)",
+  "line_items": [
+    {
+      "description": "Item description",
+      "hsn_sac": "HSN/SAC code",
+      "quantity": <number>,
+      "unit": "Nos/Kg/Ltr/etc",
+      "unit_rate": <number: rate per unit>,
+      "line_total": <number: quantity × rate, before tax>,
+      "tax_rate": <number: GST % for this item>,
+      "tax_amount": <number: total tax on this item>,
+      "igst_amount": <number: 0 if intra-state>,
+      "cgst_amount": <number: 0 if inter-state>,
+      "sgst_amount": <number: 0 if inter-state>
+    }
+  ]
+}
+
+Rules:
+- All numeric fields MUST be plain numbers (no ₹, no commas)
+- Use 0 for missing numbers; "" for missing strings
+- IGST = inter-state; CGST+SGST = intra-state
+- Extract every line item visible in the table
+- Do NOT fabricate data — only extract what is clearly printed
+- Return ONLY the JSON object, no markdown, no explanation`;
+ }
+
+ getSupplementaryPrompt(missingFields) {
+     return `This is a continuation page of a multi-page invoice. Extract ONLY the fields listed below if visible on this page.
+
+Missing fields to find: ${missingFields.join(', ')}
+
+IMPORTANT for line_items: Only add items that are actual products/services/coverage components with their own individual descriptions. Do NOT add summary rows like "Net Premium", "Total Premium", "Gross Premium", "Final Premium", "Total OD Premium", "Total Act Premium", "IGST", "CGST", "SGST", "GST @", "Sub Total", "Grand Total", "Total Amount" as line items — those are financial summaries that belong in the amount fields above.
+
+Return ONLY a JSON object with this structure (use 0 for missing numbers, "" for missing strings):
+{
+  "vendor_name": "",
+  "vendor_gstn": "",
+  "vendor_address": "",
+  "customer_name": "",
+  "customer_gstn": "",
+  "invoice_number": "",
+  "invoice_date": "",
+  "place_of_supply": "",
+  "taxable_amount": <number: base amount before tax. For insurance: "Net Premium">,
+  "igst_amount": <number: IGST tax amount>,
+  "igst_rate": <number: IGST rate %>,
+  "cgst_amount": <number: CGST amount>,
+  "cgst_rate": <number: CGST rate %>,
+  "sgst_amount": <number: SGST amount>,
+  "sgst_rate": <number: SGST rate %>,
+  "cess_amount": 0,
+  "cess_rate": 0,
+  "tds_amount": 0,
+  "tds_rate": 0,
+  "round_off": 0,
+  "invoice_value": <number: grand total. For insurance: "Final Premium", "Gross Premium", or "Total Amount Payable">,
+  "description": "",
+  "hsn_sac_code": "",
+  "line_items": []
+}
+
+Rules:
+- All numeric fields MUST be plain numbers (no ₹, no commas)
+- Return ONLY the JSON object, no markdown, no explanation`;
+ }
+
+ parseClaudeJSON(rawText) {
+     const jsonStr = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+     try {
+         return JSON.parse(jsonStr);
+     } catch {
+         const match = rawText.match(/\{[\s\S]*\}/);
+         if (!match) throw new Error('Claude response is not valid JSON');
+         return JSON.parse(match[0]);
+     }
+ }
+
+ // Send one image buffer (base64) to Claude and return raw extracted JSON
+ async callClaudeWithImage(base64Data, mediaType, prompt) {
+     const response = await this.client.messages.create({
+         model: this.config.model,
+         max_tokens: 4096,
+         messages: [{
+             role: 'user',
+             content: [
+                 { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } },
+                 { type: 'text', text: prompt }
+             ]
+         }]
+     });
+     return response.content[0].text.trim();
+ }
+
+ // Convert a PDF page buffer to JPEG base64 (smaller = fewer tokens)
+ async pageBufferToBase64(pageBuffer) {
+     if (imageOptimizationAvailable) {
+         const jpeg = await sharp(pageBuffer).jpeg({ quality: 85 }).toBuffer();
+         return { base64: jpeg.toString('base64'), mediaType: 'image/jpeg' };
+     }
+     return { base64: pageBuffer.toString('base64'), mediaType: 'image/png' };
+ }
+
+ // 📄 Process a PDF by converting each page to an image (token-efficient)
+ // Only advances to the next page if required fields are still missing
+ async processPdfAsImages(filePath, voucherType) {
+     const doc = await pdfToImg(filePath, { scale: 1.5 });
+     const pageCount = doc.length;
+     console.log(`📄 PDF has ${pageCount} page(s) — processing as images`);
+
+     let extractedRaw = null;
+     let rawText = '';
+     let pageNum = 0;
+
+     for await (const pageBuffer of doc) {
+         pageNum++;
+         const { base64, mediaType } = await this.pageBufferToBase64(pageBuffer);
+
+         let prompt;
+         if (pageNum === 1) {
+             prompt = this.getExtractionPrompt();
+         } else {
+             const missing = [];
+             if (!extractedRaw.vendor_name) missing.push('vendor name, GSTIN, address');
+             if (!extractedRaw.invoice_number) missing.push('invoice number');
+             if (!extractedRaw.invoice_date) missing.push('invoice date');
+             if (!(parseFloat(extractedRaw.invoice_value) > 0) && !(parseFloat(extractedRaw.taxable_amount) > 0)) missing.push('total amount (invoice_value / taxable_amount / Net Premium / Final Premium), tax breakdown');
+             if (!Array.isArray(extractedRaw.line_items) || extractedRaw.line_items.length === 0) missing.push('line items');
+             prompt = this.getSupplementaryPrompt(missing);
+         }
+
+         console.log(`   🔍 Page ${pageNum}/${pageCount}${pageNum > 1 ? ' (supplementary)' : ''}...`);
+         const rawResponse = await this.callClaudeWithImage(base64, mediaType, prompt);
+         const pageData = this.parseClaudeJSON(rawResponse);
+         if (Array.isArray(pageData.line_items)) {
+             pageData.line_items = this.filterSummaryLineItems(pageData.line_items);
+         }
+
+         extractedRaw = pageNum === 1 ? pageData : this.mergeExtractions(extractedRaw, pageData);
+         rawText += (pageNum > 1 ? `\n[Page ${pageNum}]\n` : '') + rawResponse;
+
+         if (this.isExtractionComplete(extractedRaw)) {
+             if (pageNum < pageCount) {
+                 console.log(`✅ All required fields found on page ${pageNum} — skipping ${pageCount - pageNum} remaining page(s)`);
+             }
+             break;
+         }
+         if (pageNum < pageCount) console.log(`⚠️  Required fields incomplete after page ${pageNum}, reading page ${pageNum + 1}...`);
+     }
+
+     return { extractedRaw, rawText };
+ }
+
+ // 🖼️ Process an image file or PDF-as-document directly (used when pdf-to-img is unavailable)
+ async processDirectFile(filePath, voucherType) {
+     const fileBuffer = fs.readFileSync(filePath);
+     const mediaType = this.getMediaType(filePath);
+
+     let base64Data = fileBuffer.toString('base64');
+     if (filePath.match(/\.(bmp|tiff)$/i) && imageOptimizationAvailable) {
+         const jpeg = await sharp(fileBuffer).jpeg().toBuffer();
+         base64Data = jpeg.toString('base64');
+     }
+
+     const contentBlock = mediaType === 'application/pdf'
+         ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Data } }
+         : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Data } };
+
+     const response = await this.client.messages.create({
+         model: this.config.model,
+         max_tokens: 4096,
+         messages: [{
+             role: 'user',
+             content: [contentBlock, { type: 'text', text: this.getExtractionPrompt() }]
+         }]
+     });
+
+     const rawText = response.content[0].text.trim();
+     const extractedRaw = this.parseClaudeJSON(rawText);
+     if (Array.isArray(extractedRaw.line_items)) {
+         extractedRaw.line_items = this.filterSummaryLineItems(extractedRaw.line_items);
+     }
+     return { extractedRaw, rawText };
+ }
+
+ async processInvoice(filePath, originalName, voucherType = 'Purchase') {
+     const startTime = Date.now();
+     const isPdf = path.extname(filePath).toLowerCase() === '.pdf';
+
+     try {
+         console.log('🤖 Processing invoice with Claude:', originalName);
+
+         // Route: PDF → page-by-page images (token-efficient) | image/fallback → direct
+         const { extractedRaw, rawText } = (isPdf && pdfConversionAvailable)
+             ? await this.processPdfAsImages(filePath, voucherType)
+             : await this.processDirectFile(filePath, voucherType);
+
+         const processingTime = Date.now() - startTime;
+         const extractedData = this.convertToInternalFormat(extractedRaw, voucherType);
+
+         const gstinWarnings = this.validateGSTINs(extractedData);
+         if (gstinWarnings.length > 0) {
+             console.log('⚠️ GSTIN validation warnings:', gstinWarnings);
+             extractedData.validation_warnings = JSON.stringify(gstinWarnings);
+         }
+
+         console.log('✅ Claude processing complete:', {
+             vendor: extractedData.vendor_name,
+             amount: extractedData.invoice_value,
+             lineItems: extractedData.line_items?.length || 0,
+             voucherType: extractedData.voucher_type,
+             method: isPdf && pdfConversionAvailable ? 'pdf-as-images' : 'direct'
+         });
+
+         return {
+             success: true,
+             extractedData: {
+                 ...extractedData,
+                 processing_time_ms: processingTime,
+                 confidence_score: 0.92,
+                 processing_source: 'claude'
+             },
+             rawText,
+             processingTime
+         };
+
+     } catch (error) {
+         console.error('❌ Claude processing failed:', error);
+         throw error;
+     }
+ }
+
+ convertToInternalFormat(data, voucherType) {
+     const parseNum = (v) => {
+         if (v === null || v === undefined || v === '') return 0;
+         const n = parseFloat(String(v).replace(/[^0-9.-]/g, ''));
+         return isNaN(n) ? 0 : Math.round(n * 100) / 100;
+     };
+
+     const lineItems = Array.isArray(data.line_items) ? data.line_items.map(item => ({
+         description: item.description || '',
+         hsn_code: item.hsn_sac || item.hsn_code || '',
+         quantity: parseNum(item.quantity) || 1,
+         unit: item.unit || 'Nos',
+         unit_rate: parseNum(item.unit_rate),
+         line_total: parseNum(item.line_total),
+         tax_rate: parseNum(item.tax_rate),
+         tax_amount: parseNum(item.tax_amount),
+         igst_amount: parseNum(item.igst_amount),
+         cgst_amount: parseNum(item.cgst_amount),
+         sgst_amount: parseNum(item.sgst_amount)
+     })) : [];
+
+     const igst = parseNum(data.igst_amount);
+     const cgst = parseNum(data.cgst_amount);
+     const sgst = parseNum(data.sgst_amount);
+     const cess = parseNum(data.cess_amount);
+
+     return {
+         invoice_date: data.invoice_date || '',
+         invoice_number: data.invoice_number || '',
+         vendor_name: data.vendor_name || '',
+         vendor_gstn: (data.vendor_gstn || '').trim().toUpperCase(),
+         vendor_address: data.vendor_address || '',
+         customer_name: data.customer_name || '',
+         customer_gstn: (data.customer_gstn || '').trim().toUpperCase(),
+         place_of_supply: data.place_of_supply || '',
+         taxable_amount: parseNum(data.taxable_amount),
+         igst_amount: igst, igst_rate: parseNum(data.igst_rate),
+         cgst_amount: cgst, cgst_rate: parseNum(data.cgst_rate),
+         sgst_amount: sgst, sgst_rate: parseNum(data.sgst_rate),
+         cess_amount: cess, cess_rate: parseNum(data.cess_rate),
+         tds_amount: parseNum(data.tds_amount), tds_rate: parseNum(data.tds_rate),
+         round_off: parseNum(data.round_off),
+         invoice_value: parseNum(data.invoice_value),
+         description: data.description || '',
+         hsn_sac_code: data.hsn_sac_code || '',
+         line_items: lineItems,
+         line_items_count: lineItems.length,
+         has_line_items: lineItems.length > 0 ? 1 : 0,
+         voucher_type: voucherType,
+         ledger_name: '',
+         total_tax_amount: igst + cgst + sgst + cess,
+         category: 'General',
+         quantity: lineItems.length > 0 ? lineItems[0].quantity : 1,
+         unit_rate: lineItems.length > 0 ? lineItems[0].unit_rate : 0,
+         line_item_amount: lineItems.reduce((s, i) => s + i.line_total, 0)
+     };
+ }
+
+ // Replace visually similar non-ASCII characters (e.g. Cyrillic О → O) in GSTINs
+ sanitizeGSTIN(gstin) {
+     if (!gstin) return '';
+     // Normalize to ASCII: replace common Unicode lookalikes for letters and digits
+     return gstin.trim()
+         .toUpperCase()
+         .replace(/[^\x00-\x7F]/g, (ch) => {
+             const map = {
+                 'А':'A','В':'B','С':'C','Е':'E','Н':'H','І':'I','Ј':'J',
+                 'К':'K','М':'M','О':'O','Р':'P','Q':'Q','Ѕ':'S','Т':'T',
+                 'Ʋ':'V','Х':'X','Ү':'Y','Z':'Z','0':'0'
+             };
+             return map[ch] || ch;
+         });
+ }
+
+ validateGSTINs(data) {
+     const warnings = [];
+
+     if (data.vendor_gstn) {
+         const sanitized = this.sanitizeGSTIN(data.vendor_gstn);
+         if (sanitized !== data.vendor_gstn) {
+             console.log(`🔧 Vendor GSTIN sanitized: "${data.vendor_gstn}" → "${sanitized}"`);
+             data.vendor_gstn = sanitized;
+         }
+         const result = GSTINValidator.validate(data.vendor_gstn);
+         if (!result.valid) {
+             warnings.push(`Vendor GSTIN "${data.vendor_gstn}" invalid: ${result.error}`);
+         } else if (data.vendor_address) {
+             const addrState = GSTINValidator.inferStateFromAddress(data.vendor_address);
+             if (addrState && addrState !== result.stateName) {
+                 warnings.push(`Vendor GSTIN state (${result.stateName}) may not match address state (${addrState}) — please verify`);
+             }
+         }
+     }
+
+     if (data.customer_gstn) {
+         const sanitized = this.sanitizeGSTIN(data.customer_gstn);
+         if (sanitized !== data.customer_gstn) {
+             data.customer_gstn = sanitized;
+         }
+         const result = GSTINValidator.validate(data.customer_gstn);
+         if (!result.valid) warnings.push(`Customer GSTIN "${data.customer_gstn}" invalid: ${result.error}`);
+     }
+     return warnings;
+ }
+}
+
 // Enhanced Amount Processor with Parseur data preservation
 class EnhancedAmountProcessor {
  static AMOUNT_TOLERANCE = 0.5;
@@ -3593,35 +4116,56 @@ class EnhancedAmountProcessor {
 class UnifiedDocumentProcessor {
  static async processInvoice(filePath, originalName, voucherType = 'Purchase') {
      const startTime = Date.now();
-     
-     try {
-         if (PARSEUR_CONFIG.enabled) {
-             try {
-                 console.log('🚀 Attempting Parseur processing...');
-                 const parseurResult = await parseurProcessor.processInvoiceWithParseur(filePath, originalName, voucherType);
-                 
-                 if (parseurResult.success) {
-                     const finalData = this.applyEnhancedGSTLogic(parseurResult.extractedData, 'parseur');
-                     
-                     return {
-                         success: true,
-                         extractedData: finalData,
-                         rawText: parseurResult.rawText,
-                         processingSource: 'parseur',
-                         processingTime: parseurResult.processingTime
-                     };
-                 }
-             } catch (parseurError) {
-                 console.log('⚠️ Parseur processing failed, falling back to Document AI:', parseurError.message);
+
+     // 1️⃣ PRIMARY: Claude AI
+     if (CLAUDE_CONFIG.enabled) {
+         try {
+             console.log('🤖 Attempting Claude AI processing...');
+             const claudeResult = await claudeProcessor.processInvoice(filePath, originalName, voucherType);
+
+             if (claudeResult.success) {
+                 const finalData = this.applyEnhancedGSTLogic(claudeResult.extractedData, 'claude');
+                 return {
+                     success: true,
+                     extractedData: finalData,
+                     rawText: claudeResult.rawText,
+                     processingSource: 'claude',
+                     processingTime: claudeResult.processingTime
+                 };
              }
+         } catch (claudeError) {
+             console.log('⚠️ Claude processing failed, falling back to Document AI:', claudeError.message);
          }
-         
+     }
+
+     // 2️⃣ FIRST FALLBACK: Parseur (if still configured)
+     if (PARSEUR_CONFIG.enabled) {
+         try {
+             console.log('🔄 Falling back to Parseur processing...');
+             const parseurResult = await parseurProcessor.processInvoiceWithParseur(filePath, originalName, voucherType);
+
+             if (parseurResult.success) {
+                 const finalData = this.applyEnhancedGSTLogic(parseurResult.extractedData, 'parseur');
+                 return {
+                     success: true,
+                     extractedData: finalData,
+                     rawText: parseurResult.rawText,
+                     processingSource: 'parseur',
+                     processingTime: parseurResult.processingTime
+                 };
+             }
+         } catch (parseurError) {
+             console.log('⚠️ Parseur fallback failed, trying Document AI:', parseurError.message);
+         }
+     }
+
+     // 3️⃣ SECOND FALLBACK: Document AI
+     try {
          console.log('🔄 Processing with Document AI...');
          const documentAIResult = await this.processWithDocumentAI(filePath, originalName, voucherType);
-         
+
          if (documentAIResult.success) {
              const finalData = this.applyEnhancedGSTLogic(documentAIResult.extractedData, 'document_ai');
-             
              return {
                  success: true,
                  extractedData: finalData,
@@ -3630,13 +4174,11 @@ class UnifiedDocumentProcessor {
                  processingTime: Date.now() - startTime
              };
          }
-         
-         throw new Error('All processing methods failed');
-         
-     } catch (error) {
-         console.error('❌ Document processing failed:', error);
-         throw error;
+     } catch (docAIError) {
+         console.log('⚠️ Document AI failed:', docAIError.message);
      }
+
+     throw new Error('All processing methods failed (Claude, Parseur, Document AI)');
  }
 
  static async processWithDocumentAI(filePath, originalName, voucherType = 'Purchase') {
@@ -3754,16 +4296,21 @@ function convertToTallyFormat(rows) {
          lineItems = [];
      }
      
-     // If no line items, create a single item entry
-     if (lineItems.length === 0) {
+     // Drop line items with no amount (e.g. insurance coverage descriptions)
+     const meaningfulLineItems = lineItems.filter(item => (item.line_total || 0) > 0 || (item.unit_rate || 0) > 0);
+
+     // If no meaningful line items, fall back to a single summary entry using the invoice total
+     if (meaningfulLineItems.length === 0) {
          lineItems = [{
              description: row.description || 'Standard Purchase Item',
              quantity: row.quantity || 1,
-             unit_rate: row.unit_rate || 0,
+             unit_rate: row.unit_rate || row.taxable_amount || row.invoice_value || 0,
              line_total: row.taxable_amount || row.invoice_value || 0,
-             tax_rate: 18,
+             tax_rate: row.igst_rate || row.cgst_rate && row.cgst_rate * 2 || 18,
              tax_amount: row.total_tax_amount || 0
          }];
+     } else {
+         lineItems = meaningfulLineItems;
      }
      
      const drEntries = [];
@@ -3907,10 +4454,20 @@ function convertToTallyFormat(rows) {
  return tallyData;
 }
 
-// Initialize Parseur processor
+// Initialize Claude processor (primary)
+let claudeProcessor;
+if (CLAUDE_CONFIG.enabled) {
+ claudeProcessor = new ClaudeInvoiceProcessor(CLAUDE_CONFIG);
+ console.log('✅ Claude AI processor initialized (primary extractor)');
+} else {
+ console.log('⚠️  Claude AI disabled — set ANTHROPIC_API_KEY in .env to enable');
+}
+
+// Initialize Parseur processor (first fallback)
 let parseurProcessor;
 if (PARSEUR_CONFIG.enabled) {
  parseurProcessor = new ParseurInvoiceProcessor(PARSEUR_CONFIG);
+ console.log('✅ Parseur processor initialized (first fallback)');
 }
 
 // Basic endpoints
@@ -3919,8 +4476,8 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/expenses', (req, res) => {
- const sql = `SELECT *, 
-     CASE WHEN parseur_document_id IS NOT NULL THEN 1 ELSE 0 END as can_reprocess
+ const sql = `SELECT *,
+     CASE WHEN (file_path IS NOT NULL OR parseur_document_id IS NOT NULL) THEN 1 ELSE 0 END as can_reprocess
      FROM expenses ORDER BY created_at DESC`;
  
  db.all(sql, (err, rows) => {
@@ -3965,8 +4522,7 @@ app.get('/api/expenses', (req, res) => {
 app.post('/api/expenses/:id/reprocess', async (req, res) => {
  try {
      const expenseId = req.params.id;
-     
-     // Get existing expense with Parseur document ID
+
      const existingExpense = await new Promise((resolve, reject) => {
          const sql = 'SELECT * FROM expenses WHERE id = ?';
          db.get(sql, [expenseId], (err, row) => {
@@ -3974,39 +4530,52 @@ app.post('/api/expenses/:id/reprocess', async (req, res) => {
              else resolve(row);
          });
      });
-     
+
      if (!existingExpense) {
-         return res.status(404).json({
-             success: false,
-             error: 'Expense not found'
-         });
+         return res.status(404).json({ success: false, error: 'Expense not found' });
      }
-     
-     if (!existingExpense.parseur_document_id) {
+
+     const canUseFile = existingExpense.file_path && fs.existsSync(existingExpense.file_path);
+     const canUseParseur = !!(existingExpense.parseur_document_id && PARSEUR_CONFIG.enabled && parseurProcessor);
+
+     if (!canUseFile && !canUseParseur) {
          return res.status(400).json({
              success: false,
-             error: 'Reprocessing not available - no Parseur document ID found',
-             details: 'This expense was not processed with Parseur or the document ID was not stored'
+             error: 'Reprocessing not available',
+             details: 'Original file no longer exists and no Parseur document ID is stored'
          });
      }
-     
-     if (!PARSEUR_CONFIG.enabled || !parseurProcessor) {
-         return res.status(503).json({
-             success: false,
-             error: 'Parseur service not available',
-             details: 'Parseur integration is not configured'
-         });
+
+     let reprocessResult;
+     let usedSource;
+
+     // Prefer Claude (file-based) if the file is available
+     if (canUseFile && CLAUDE_CONFIG.enabled && claudeProcessor) {
+         console.log(`🤖 Reprocessing expense ${expenseId} with Claude (file: ${existingExpense.file_path})`);
+         reprocessResult = await claudeProcessor.processInvoice(
+             existingExpense.file_path,
+             existingExpense.original_filename || path.basename(existingExpense.file_path),
+             existingExpense.voucher_type || 'Purchase'
+         );
+         usedSource = 'claude_reprocessed';
+     } else if (canUseParseur) {
+         console.log(`🔄 Reprocessing expense ${expenseId} with Parseur document ID: ${existingExpense.parseur_document_id}`);
+         reprocessResult = await parseurProcessor.reprocessDocument(existingExpense.parseur_document_id);
+         usedSource = 'parseur_reprocessed';
+     } else if (canUseFile) {
+         // File exists but Claude not configured — run through full pipeline
+         reprocessResult = await UnifiedDocumentProcessor.processInvoice(
+             existingExpense.file_path,
+             existingExpense.original_filename || path.basename(existingExpense.file_path),
+             existingExpense.voucher_type || 'Purchase'
+         );
+         usedSource = reprocessResult.processingSource + '_reprocessed';
      }
-     
-     console.log(`🔄 Reprocessing expense ${expenseId} with Parseur document ID: ${existingExpense.parseur_document_id}`);
-     
-     // Reprocess using existing Parseur document ID
-     const reprocessResult = await parseurProcessor.reprocessDocument(existingExpense.parseur_document_id);
-     
-     if (!reprocessResult.success) {
-         throw new Error(`Reprocessing failed: ${reprocessResult.error}`);
+
+     if (!reprocessResult || !reprocessResult.success) {
+         throw new Error(`Reprocessing failed: ${reprocessResult?.error || 'unknown error'}`);
      }
-     
+
      const extractedData = reprocessResult.extractedData;
      
      // Preserve original voucher type and file information
@@ -4070,7 +4639,7 @@ app.post('/api/expenses/:id/reprocess', async (req, res) => {
          prepareNumericValue(extractedData.amount_confidence, 'amount_confidence', 0.95),
          prepareNumericValue(extractedData.processing_time_ms, 'processing_time_ms', 500),
          'pending_review',
-         'parseur_reprocessed',
+         usedSource,
          JSON.stringify(extractedData.line_items || []),
          prepareNumericValue(extractedData.line_items_count, 'line_items_count', 0),
          prepareBooleanValue(extractedData.has_line_items, 'has_line_items'),
@@ -4081,39 +4650,35 @@ app.post('/api/expenses/:id/reprocess', async (req, res) => {
          'reprocessed',
          expenseId
      ];
-     
+
      await new Promise((resolve, reject) => {
          db.run(updateSql, values, function(err) {
              if (err) reject(err);
              else resolve(this.changes);
          });
      });
-     
-     console.log(`✅ Expense ${expenseId} reprocessed successfully using existing Parseur document ID`);
-     
+
+     console.log(`✅ Expense ${expenseId} reprocessed successfully via ${usedSource}`);
+
      res.json({
          success: true,
-         message: 'Expense reprocessed successfully using existing Parseur data',
+         message: `Expense reprocessed successfully via ${usedSource}`,
          expense: {
              id: expenseId,
              invoice_number: extractedData.invoice_number,
              vendor_name: extractedData.vendor_name,
              invoice_value: extractedData.invoice_value || extractedData.amount,
              line_items_count: extractedData.line_items_count || 0,
-             processing_source: 'parseur_reprocessed',
+             processing_source: usedSource,
              confidence: Math.round((extractedData.confidence_score || 0) * 100),
              voucher_type: extractedData.voucher_type,
              entry_type: 'reprocessed',
-             parseur_document_id: existingExpense.parseur_document_id,
              reprocessed: true,
              processing_time_ms: extractedData.processing_time_ms || 500
          },
          reprocessing: {
              original_processing_source: existingExpense.processing_source,
-             reprocessed_with: 'parseur_reprocessed',
-             parseur_document_id: existingExpense.parseur_document_id,
-             credit_usage: 'optimized (reused existing document)',
-             processing_time_improvement: '95% faster'
+             reprocessed_with: usedSource
          }
      });
      
@@ -4984,7 +5549,7 @@ app.get('/api/export-tally', (req, res) => {
           totalInvoices++;
           const taxType = row.igst_amount > 0 ? 'Inter-state (IGST)' : 'Intra-state (CGST+SGST)';
           const vendorState = row.vendor_gstn ? GST_STATE_CODES[row.vendor_gstn.substring(0, 2)] || 'Unknown' : 'N/A';
-          const canReprocess = !!(row.parseur_document_id);
+          const canReprocess = !!(row.file_path || row.parseur_document_id);
           
           // Parse line items safely
           let lineItems = [];
@@ -5033,9 +5598,12 @@ app.get('/api/export-tally', (req, res) => {
               row.parseur_document_id || 'N/A'
           ];
           
-          if (lineItems.length > 0) {
-              // Create one row for each line item (UNIQUE line item data)
-              lineItems.forEach((item, index) => {
+          // Only keep line items that have an actual amount
+          const meaningfulItems = lineItems.filter(item => (item.line_total || 0) > 0 || (item.unit_rate || 0) > 0);
+
+          if (meaningfulItems.length > 0) {
+              // Create one row per meaningful line item; invoice totals only on the first row
+              meaningfulItems.forEach((item, index) => {
                   const lineItemData = [
                       `"${(item.description || `Line Item ${index + 1}`).replace(/"/g, '""')}"`,
                       item.hsn_code || item.hsn_sac_code || '',
@@ -5045,8 +5613,8 @@ app.get('/api/export-tally', (req, res) => {
                       item.tax_rate || 18,
                       item.tax_amount || 0
                   ];
-                  
-                  const csvRow = [...invoiceHeaderData, ...lineItemData, ...invoiceTotals];
+                  const totalsForRow = index === 0 ? invoiceTotals : invoiceTotals.map(() => '');
+                  const csvRow = [...invoiceHeaderData, ...lineItemData, ...totalsForRow];
                   csv += csvRow.join(',') + '\n';
                   totalRows++;
               });
@@ -5510,7 +6078,7 @@ app.delete('/api/expenses/:id', (req, res) => {
 // Get line items for a specific invoice
 app.get('/api/expenses/:id/line-items', (req, res) => {
  const expenseId = req.params.id;
- const sql = 'SELECT line_items, line_items_count, has_line_items, table_structure_confidence, processing_source, voucher_type, parseur_document_id FROM expenses WHERE id = ?';
+ const sql = 'SELECT line_items, line_items_count, has_line_items, table_structure_confidence, processing_source, voucher_type, parseur_document_id, taxable_amount, igst_amount, cgst_amount, sgst_amount, invoice_value FROM expenses WHERE id = ?';
 
  db.get(sql, [expenseId], (err, row) => {
      if (err) {
@@ -5533,8 +6101,15 @@ app.get('/api/expenses/:id/line-items', (req, res) => {
              table_structure_confidence: row.table_structure_confidence || 0,
              processing_source: row.processing_source || 'unknown',
              voucher_type: row.voucher_type || 'Purchase',
-             can_reprocess: !!(row.parseur_document_id), // 🧠 Reprocessing availability
-             parseur_document_id: row.parseur_document_id || null
+             can_reprocess: !!(row.parseur_document_id),
+             parseur_document_id: row.parseur_document_id || null,
+             invoice_totals: {
+                 taxable_amount: row.taxable_amount || 0,
+                 igst_amount: row.igst_amount || 0,
+                 cgst_amount: row.cgst_amount || 0,
+                 sgst_amount: row.sgst_amount || 0,
+                 invoice_value: row.invoice_value || 0
+             }
          });
      } catch (parseError) {
          res.status(500).json({ error: 'Failed to parse line items data' });
@@ -5830,19 +6405,19 @@ app.listen(PORT, () => {
  console.log('  • 🎯 FIXED: Ledger standardization timing ensures correct alias mapping');
  console.log('');
  
- if (!PARSEUR_CONFIG.enabled) {
-     console.log('⚠️  PARSEUR PROCESSING DISABLED:');
-     console.log('   To enable Parseur integration and reprocessing, set environment variables:');
-     console.log('   - PARSEUR_API_TOKEN=your_token');
-     console.log('   - PARSEUR_MAILBOX_ID=your_mailbox_id');
+ if (CLAUDE_CONFIG.enabled) {
+     console.log('✅ CLAUDE AI PROCESSING ENABLED (PRIMARY EXTRACTOR):');
+     console.log('   • Model: claude-sonnet-4-6 with vision capabilities');
+     console.log('   • Supports PDF and image invoices (JPG, PNG, WEBP, GIF)');
+     console.log('   • GSTIN format validation with state-code matching');
+     console.log('   • Full line-item extraction with HSN/SAC codes');
+     console.log('   • IGST / CGST+SGST / CESS / TDS extraction');
+     console.log('   • File-based reprocessing without re-upload');
  } else {
-     console.log('✅ PARSEUR PROCESSING ENABLED WITH REPROCESSING SUPPORT:');
-     console.log('   • Automated invoice processing with document ID storage');
-     console.log('   • High accuracy data extraction with reprocessing capability');
-     console.log('   • Credit optimization through duplicate detection');
-     console.log('   • Document ID reuse for efficient reprocessing');
-     console.log('   • Enhanced data preservation with Tally integration');
-     console.log('   • Ready for production use with cost optimization');
+     console.log('⚠️  CLAUDE AI DISABLED — set ANTHROPIC_API_KEY in .env to enable as primary extractor');
+ }
+ if (PARSEUR_CONFIG.enabled) {
+     console.log('✅ PARSEUR configured as first fallback extractor');
  }
  
  console.log('');
