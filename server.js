@@ -459,33 +459,28 @@ class DuplicateDetector {
             }
         }
 
-        // Check for duplicates within the batch itself
-        const hashCounts = new Map();
-        fileHashes.forEach((hash, filename) => {
-            if (!hashCounts.has(hash)) {
-                hashCounts.set(hash, []);
-            }
-            hashCounts.get(hash).push(filename);
-        });
+        // Track which hashes have already been seen in this batch
+        // so we let the FIRST occurrence through and reject subsequent copies
+        const seenHashesInBatch = new Set();
 
         // Process each file
         for (const file of uploadedFiles) {
             if (!fileHashes.has(file.originalname)) continue; // Skip files with hash errors
 
             const fileHash = fileHashes.get(file.originalname);
-            
-            // Check for batch-internal duplicates
-            const filesWithSameHash = hashCounts.get(fileHash);
-            if (filesWithSameHash.length > 1) {
+
+            // Check for batch-internal duplicates — only reject 2nd+ copies, let the first through
+            if (seenHashesInBatch.has(fileHash)) {
                 results.duplicates.push({
                     filename: file.originalname,
-                    type: 'batch_internal',
-                    duplicateFiles: filesWithSameHash.filter(f => f !== file.originalname)
+                    error: 'Same file uploaded twice in this batch',
+                    type: 'batch_internal'
                 });
                 results.batchStats.contentDuplicates++;
                 await this.safeDeleteFile(file.path);
                 continue;
             }
+            seenHashesInBatch.add(fileHash);
 
             // Check against database
             try {
@@ -508,6 +503,8 @@ class DuplicateDetector {
                 } else if (validation.isDuplicate) {
                     results.duplicates.push({
                         filename: file.originalname,
+                        error: validation.message || 'File already uploaded previously',
+                        type: 'db_duplicate',
                         validation: validation
                     });
                     results.batchStats.contentDuplicates++;
@@ -1686,13 +1683,17 @@ if (!fs.existsSync('./uploads')) fs.mkdirSync('./uploads');
 if (!fs.existsSync('./processed')) fs.mkdirSync('./processed');
 if (!fs.existsSync('./tally-exports')) fs.mkdirSync('./tally-exports'); // 🆕 Directory for Tally Excel files
 
-const upload = multer({ 
+const ALLOWED_EXTENSIONS = /\.(jpeg|jpg|png|gif|bmp|tiff|webp|pdf)$/i;
+
+const upload = multer({
  storage: multer.diskStorage({
      destination: (req, file, cb) => cb(null, './uploads'),
      filename: (req, file, cb) => cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname))
  }),
  limits: { fileSize: 25 * 1024 * 1024 },
- fileFilter: (req, file, cb) => cb(null, /jpeg|jpg|png|gif|bmp|tiff|webp|pdf/i.test(path.extname(file.originalname)))
+ // NOTE: Do NOT use cb(null, false) here — in multer v1.4.5-lts.1 that throws
+ // LIMIT_UNEXPECTED_FILE instead of silently skipping. Validate extensions in the route handler.
+ fileFilter: (req, file, cb) => cb(null, true)
 });
 
 let db;
@@ -3366,10 +3367,13 @@ class ClaudeInvoiceProcessor {
  // Remove financial summary rows that Claude sometimes includes as line items
  filterSummaryLineItems(lineItems) {
      if (!Array.isArray(lineItems)) return [];
-     const summaryPattern = /^(net premium|gross premium|final premium|total premium|total od premium|total act premium|sub.?total|grand total|total amount|igst|cgst|sgst|gst\s*@|tax amount|round.?off|discount|total payable|amount payable|total tax|total gst)/i;
+     // Matches summary/tax rows whether they appear at start of description or prefixed with "Output", "Input", etc.
+     const summaryPattern = /^(sub.?total|grand total|net total|gross total|final total|amount payable|total payable|payable amount|balance due|balance payable|total amount|total tax|total gst|igst|cgst|sgst|gst\s*@|tax amount|round.?off|total\s+(premium|od|act|basic|tax|gst|amount|payable|due|charges?)|net\s+premium|gross\s+premium|final\s+premium|(output|input)\s+(cgst|sgst|igst|gst))/i;
      return lineItems.filter(item => {
          const desc = (item.description || '').trim();
          if (!desc) return false;
+         // Never filter negative-amount items that are not summary labels — they are real discounts/returns
+         if ((item.line_total < 0 || item.unit_rate < 0) && desc.length > 2 && !summaryPattern.test(desc)) return true;
          if (summaryPattern.test(desc)) {
              console.log(`   🧹 Filtered summary row from line items: "${desc}"`);
              return false;
@@ -3384,26 +3388,26 @@ class ClaudeInvoiceProcessor {
 Required JSON structure:
 {
   "vendor_name": "Full legal name of the supplier/seller",
-  "vendor_gstn": "Supplier GSTIN (15-character alphanumeric, uppercase) or empty string",
+  "vendor_gstn": "Supplier GSTIN (15-character alphanumeric, uppercase) — may appear near vendor name, at bottom of invoice near PAN number, or in a signature/authorization block",
   "vendor_address": "Complete supplier address as printed",
-  "customer_name": "Buyer/recipient company name",
-  "customer_gstn": "Buyer GSTIN if present, else empty string",
+  "customer_name": "The BUYER / Bill-To party name. If the invoice has both a 'Consignee' (ship-to) and a 'Buyer (if other than consignee)' section, use the BUYER section — NOT the consignee. The buyer is the one who pays; the consignee is just where goods are delivered.",
+  "customer_gstn": "GSTIN of the BUYER (Bill-To party), not the consignee. If invoice has separate Buyer and Consignee sections, use Buyer's GSTIN.",
   "invoice_number": "Invoice/bill number exactly as printed",
   "invoice_date": "Invoice date in DD/MM/YYYY format",
   "place_of_supply": "Place of supply state name",
-  "taxable_amount": <number: subtotal/base amount before tax. For insurance: "Net Premium" before GST. For services: amount before GST>,
-  "igst_amount": <number: IGST tax amount, 0 if not present>,
+  "taxable_amount": <number: the PRE-TAX subtotal — look for "Taxable Amount", "Taxable Value", "Assessable Value", "Total Taxable" in the GST summary table. For insurance: "Net Premium" before GST. NEVER use "Balance Due", "Amount Payable", "Grand Total", or "Total" as taxable_amount — those are post-tax figures>,
+  "igst_amount": <number: IGST tax amount from GST summary, 0 if not present>,
   "igst_rate": <number: IGST rate %, 0 if not present>,
-  "cgst_amount": <number: CGST tax amount, 0 if not present>,
+  "cgst_amount": <number: CGST tax amount — look for "CGST", "CGST(9%)", "CGST @" anywhere in the document including premium schedule tables. Sum across all rows if multiple. 0 if not present>,
   "cgst_rate": <number: CGST rate %, 0 if not present>,
-  "sgst_amount": <number: SGST/UTGST amount, 0 if not present>,
+  "sgst_amount": <number: SGST/UTGST amount — look for "SGST", "SGST(9%)", "SGST @" anywhere in the document including premium schedule tables. Sum across all rows if multiple. 0 if not present>,
   "sgst_rate": <number: SGST rate %, 0 if not present>,
   "cess_amount": <number: CESS amount, 0 if not present>,
   "cess_rate": <number: CESS rate %, 0 if not present>,
   "tds_amount": <number: TDS deducted, 0 if not present>,
   "tds_rate": <number: TDS rate %, 0 if not present>,
   "round_off": <number: rounding adjustment (can be negative), 0 if not present>,
-  "invoice_value": <number: grand total including all taxes. For insurance: use "Final Premium", "Gross Premium", or "Total Amount Payable". For utilities: use "Total Amount Due". For any document: the largest/final payable amount>,
+  "invoice_value": <number: the FINAL payable amount AFTER all taxes — look for "Balance Due", "Grand Total", "Total Amount Payable", "Invoice Total", "Net Payable". For insurance policies: "Gross Premium Paid", "Gross Premium", "Final Premium", "Total Premium Payable". This must equal taxable_amount + all taxes>,
   "description": "Primary product or service description",
   "hsn_sac_code": "HSN or SAC code (primary item)",
   "line_items": [
@@ -3424,11 +3428,23 @@ Required JSON structure:
 }
 
 Rules:
-- All numeric fields MUST be plain numbers (no ₹, no commas)
+- All numeric fields MUST be plain numbers (no ₹, no commas, no currency symbols)
+- Indian number format: amounts like "11,66,667" or "1,05,000" use Indian lakh/crore comma placement — convert to plain integers (11,66,667 → 1166667; 1,05,000 → 105000)
 - Use 0 for missing numbers; "" for missing strings
 - IGST = inter-state; CGST+SGST = intra-state
 - Extract every line item visible in the table
 - Do NOT fabricate data — only extract what is clearly printed
+- CRITICAL: taxable_amount is ALWAYS the pre-tax base (from GST Summary table). invoice_value is ALWAYS the final total after tax (Balance Due / Grand Total). They must NOT be the same number unless tax is 0.
+- LINE ITEMS SOURCE RULE: By default, extract ALL individual product/service rows from the main line items table as line_items. EXCEPTION: if the invoice has invoice-level discounts or scheme adjustments that are deducted after the product rows (meaning individual row amounts are pre-discount and therefore inaccurate), AND the invoice also has a "GST Receipt Summary" / "GST Summary" / "HSN Summary" table showing post-discount taxable values per HSN — then use the HSN summary rows as line_items instead (each HSN row = one line item with the correct netted taxable value). How to tell which case applies: if every product row has quantity × rate = amount with no separate discount row affecting totals → use individual rows. If there are discount rows (e.g. "MOP Discount", "Scheme Discount") reducing the subtotal, or if the sum of individual row amounts does NOT equal the taxable_amount in the GST summary → use HSN summary rows. When using HSN summary rows: { description: <short category label for all products under that HSN — never a single product name, never the raw HSN number>, hsn_sac: HSN code, quantity: 1, unit_rate: taxable value, line_total: taxable value, tax_rate: SGST%+CGST% or IGST%, tax_amount: total tax for that HSN }.
+- For insurance policy schedules: the pre-tax premium subtotal row (before any GST rows) = taxable_amount. CGST and SGST rows appear below it in the same table — extract those amounts. The final total premium including GST = invoice_value.
+- CGST and SGST labels can appear anywhere — inside premium tables, schedule tables, or summary sections. Always scan the ENTIRE document for these labels.
+- For service invoices (software, consulting, maintenance): the single line item amount IS the taxable_amount. "Add: CGST @" and "Add: SGST @" rows below it are the tax amounts. The final "Total" is invoice_value.
+- Invoice number may be labeled "Invoice No:", "Invoice No", "Bill No", "Reference No" — scan the full header area.
+- CONTINUATION PAGES: If the line items table starts with a serial number greater than 1 (e.g., the first visible item is numbered 23, 15, etc.), this is a continuation page of a multi-page invoice. Extract all line items visible on this page normally. The invoice header (number, date, vendor, customer) is still printed at the top of each page — extract it as usual. Do NOT skip line items just because they are a continuation.
+- For government/municipal/utility bills (property tax, water charges, electricity, local body levies, etc.) that contain NO mention of GST/CGST/SGST/IGST: the percentage columns are levy/charge rates, NOT GST rates. Set igst_amount=0, cgst_amount=0, sgst_amount=0, and set tax_rate=0 for all line items. The total payable amount = both taxable_amount and invoice_value.
+- ONLY populate cgst_amount, sgst_amount, igst_amount when you explicitly see the words "CGST", "SGST", "IGST", or "GST" with a rupee amount on the document.
+- BUYER vs CONSIGNEE: Many Indian GST invoices have a "Consignee" (delivery address) AND a separate "Buyer (if other than consignee)" or "Bill To" section. Always use the BUYER/BILL-TO party as customer_name and customer_gstn. The consignee is only the delivery recipient and should be ignored for customer fields.
+- Line items may include negative amounts (discounts, returns, adjustments, promotions) — include them as-is with negative values. Any row labelled as a discount, deduction, rebate, scheme, or return that has a negative or bracketed amount must have negative unit_rate and line_total (e.g. -3000, not 0).
 - Return ONLY the JSON object, no markdown, no explanation`;
  }
 
@@ -3437,7 +3453,7 @@ Rules:
 
 Missing fields to find: ${missingFields.join(', ')}
 
-IMPORTANT for line_items: Only add items that are actual products/services/coverage components with their own individual descriptions. Do NOT add summary rows like "Net Premium", "Total Premium", "Gross Premium", "Final Premium", "Total OD Premium", "Total Act Premium", "IGST", "CGST", "SGST", "GST @", "Sub Total", "Grand Total", "Total Amount" as line items — those are financial summaries that belong in the amount fields above.
+IMPORTANT for line_items: Only add items that are actual products/services/or charge components with their own individual descriptions. Do NOT add summary or tax rows (e.g. subtotals, totals, GST amounts, round-offs, or any row that repeats the invoice's aggregate figures) as line items — those are financial summaries that belong in the amount fields above.
 
 Return ONLY a JSON object with this structure (use 0 for missing numbers, "" for missing strings):
 {
@@ -3449,7 +3465,7 @@ Return ONLY a JSON object with this structure (use 0 for missing numbers, "" for
   "invoice_number": "",
   "invoice_date": "",
   "place_of_supply": "",
-  "taxable_amount": <number: base amount before tax. For insurance: "Net Premium">,
+  "taxable_amount": <number: base amount before tax — the pre-GST subtotal>,
   "igst_amount": <number: IGST tax amount>,
   "igst_rate": <number: IGST rate %>,
   "cgst_amount": <number: CGST amount>,
@@ -3461,7 +3477,7 @@ Return ONLY a JSON object with this structure (use 0 for missing numbers, "" for
   "tds_amount": 0,
   "tds_rate": 0,
   "round_off": 0,
-  "invoice_value": <number: grand total. For insurance: "Final Premium", "Gross Premium", or "Total Amount Payable">,
+  "invoice_value": <number: final amount payable including all taxes — "Grand Total", "Balance Due", "Total Payable", or equivalent>,
   "description": "",
   "hsn_sac_code": "",
   "line_items": []
@@ -3597,10 +3613,29 @@ Rules:
      try {
          console.log('🤖 Processing invoice with Claude:', originalName);
 
-         // Route: PDF → page-by-page images (token-efficient) | image/fallback → direct
-         const { extractedRaw, rawText } = (isPdf && pdfConversionAvailable)
-             ? await this.processPdfAsImages(filePath, voucherType)
-             : await this.processDirectFile(filePath, voucherType);
+         // Route: PDF → Claude native document reader (bypasses font rendering issues)
+         //        Image → page-by-page image conversion if available, else direct
+         let extractedRaw, rawText;
+         if (isPdf) {
+             // Claude reads PDFs natively as documents — more reliable than image conversion
+             // which fails for PDFs with non-standard embedded fonts (e.g. Aptos, subsetted Helvetica)
+             const directResult = await this.processDirectFile(filePath, voucherType);
+             extractedRaw = directResult.extractedRaw;
+             rawText = directResult.rawText;
+
+             // If native reading gave incomplete results, retry with page-by-page image conversion
+             if (!this.isExtractionComplete(extractedRaw) && pdfConversionAvailable) {
+                 console.log('⚠️ Direct PDF reading incomplete — retrying with page-by-page image conversion...');
+                 const imageResult = await this.processPdfAsImages(filePath, voucherType);
+                 extractedRaw = imageResult.extractedRaw;
+                 rawText = imageResult.rawText;
+             }
+         } else {
+             // Non-PDF images go directly to Claude vision
+             const result = await this.processDirectFile(filePath, voucherType);
+             extractedRaw = result.extractedRaw;
+             rawText = result.rawText;
+         }
 
          const processingTime = Date.now() - startTime;
          const extractedData = this.convertToInternalFormat(extractedRaw, voucherType);
@@ -3644,19 +3679,30 @@ Rules:
          return isNaN(n) ? 0 : Math.round(n * 100) / 100;
      };
 
-     const lineItems = Array.isArray(data.line_items) ? data.line_items.map(item => ({
-         description: item.description || '',
-         hsn_code: item.hsn_sac || item.hsn_code || '',
-         quantity: parseNum(item.quantity) || 1,
-         unit: item.unit || 'Nos',
-         unit_rate: parseNum(item.unit_rate),
-         line_total: parseNum(item.line_total),
-         tax_rate: parseNum(item.tax_rate),
-         tax_amount: parseNum(item.tax_amount),
-         igst_amount: parseNum(item.igst_amount),
-         cgst_amount: parseNum(item.cgst_amount),
-         sgst_amount: parseNum(item.sgst_amount)
-     })) : [];
+     const lineItems = Array.isArray(data.line_items) ? data.line_items.map(item => {
+         const lineTotal = parseNum(item.line_total);
+         const taxRate  = parseNum(item.tax_rate);
+         let taxAmount  = parseNum(item.tax_amount);
+
+         // Only auto-compute tax if line_total is positive (not a discount row) and tax is genuinely missing
+         if (taxAmount === 0 && taxRate > 0 && lineTotal > 0) {
+             taxAmount = Math.round((lineTotal * taxRate / 100) * 100) / 100;
+         }
+
+         return {
+             description: item.description || '',
+             hsn_code: item.hsn_sac || item.hsn_code || '',
+             quantity: parseNum(item.quantity) || 1,
+             unit: item.unit || 'Nos',
+             unit_rate: parseNum(item.unit_rate),
+             line_total: lineTotal,
+             tax_rate: taxRate,
+             tax_amount: taxAmount,
+             igst_amount: parseNum(item.igst_amount),
+             cgst_amount: parseNum(item.cgst_amount),
+             sgst_amount: parseNum(item.sgst_amount)
+         };
+     }) : [];
 
      const igst = parseNum(data.igst_amount);
      const cgst = parseNum(data.cgst_amount);
@@ -5825,13 +5871,33 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
      results.failed = bulkValidation.errors;
      results.summary.failed += bulkValidation.errors.length;
      
-     // Process valid files
-     for (const validFile of bulkValidation.valid) {
-         try {
+     // ── Phase 1: Run all Claude AI extractions IN PARALLEL ──────────────────────────────────
+     // This reduces total wait from N×30s to ~30s for any batch size.
+     // DB operations remain sequential below to avoid SQLite write contention.
+     console.log(`⚡ Starting parallel AI extraction for ${bulkValidation.valid.length} file(s)...`);
+     const extractionResults = await Promise.allSettled(
+         bulkValidation.valid.map(async (validFile) => {
              const file = req.files.find(f => f.originalname === validFile.filename);
-             if (!file) continue;
-             
+             if (!file) return { skipped: true, validFile };
              const result = await UnifiedDocumentProcessor.processInvoice(file.path, file.originalname, voucherType);
+             return { file, validFile, result };
+         })
+     );
+     console.log(`✅ Parallel extraction complete — processing DB operations...`);
+
+     // ── Phase 2: Sequential DB operations for each extraction result ─────────────────────
+     for (const settled of extractionResults) {
+         let file, validFile, result;
+         try {
+             if (settled.status === 'rejected') {
+                 // AI extraction itself failed — push to failed list; count reconciled at end
+                 results.failed.push({ filename: '(unknown)', error: 'Processing failed', details: settled.reason?.message || String(settled.reason) });
+                 continue;
+             }
+             const val = settled.value;
+             if (!val || val.skipped) continue;
+             ({ file, validFile, result } = val);
+
              const extractedData = result.extractedData;
              
              // Ensure voucher type is set
@@ -5854,12 +5920,100 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
                  });
              });
              
-             if (contentDuplicateCheck && extractedData.invoice_number && extractedData.vendor_gstn) {
+             if (contentDuplicateCheck && extractedData.invoice_number) {
+                 // Same invoice number already exists — check if this is a continuation page to merge
+                 const newItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
+                 const meaningfulNewItems = newItems.filter(i => i.description && i.description.trim().length > 2);
+
+                 // Treat as same invoice if:
+                 // (a) invoice numbers match exactly — strong signal it's the same doc, GSTN extraction may vary page to page
+                 // (b) OR vendor GSTNs match — covers the case where invoice number wasn't extracted from the new page
+                 const invoiceNumberMatches = contentDuplicateCheck.invoice_number === extractedData.invoice_number
+                                              && extractedData.invoice_number !== '';
+                 const gstnMatches = contentDuplicateCheck.vendor_gstn && extractedData.vendor_gstn &&
+                                     contentDuplicateCheck.vendor_gstn === extractedData.vendor_gstn;
+                 const isSameInvoice = invoiceNumberMatches || gstnMatches;
+
+                 if (isSameInvoice) {
+                     let existingItems = [];
+                     try { existingItems = JSON.parse(contentDuplicateCheck.line_items || '[]'); } catch (_) {}
+
+                     const existingDescs = new Set(existingItems.map(i => (i.description || '').trim().toLowerCase()));
+                     const trulyNew = meaningfulNewItems.filter(i => !existingDescs.has((i.description || '').trim().toLowerCase()));
+
+                     // Build UPDATE fields — always merge line items; also fill in missing totals
+                     // (e.g. page 1 has no totals, page 2 has them — or vice versa)
+                     const existingValue   = parseFloat(contentDuplicateCheck.invoice_value)   || 0;
+                     const existingTaxable = parseFloat(contentDuplicateCheck.taxable_amount)  || 0;
+                     const existingCgst    = parseFloat(contentDuplicateCheck.cgst_amount)     || 0;
+                     const existingSgst    = parseFloat(contentDuplicateCheck.sgst_amount)     || 0;
+                     const existingIgst    = parseFloat(contentDuplicateCheck.igst_amount)     || 0;
+
+                     const newValue   = parseFloat(extractedData.invoice_value)   || 0;
+                     const newTaxable = parseFloat(extractedData.taxable_amount)  || 0;
+                     const newCgst    = parseFloat(extractedData.cgst_amount)     || 0;
+                     const newSgst    = parseFloat(extractedData.sgst_amount)     || 0;
+                     const newIgst    = parseFloat(extractedData.igst_amount)     || 0;
+
+                     const mergedItems  = trulyNew.length > 0 ? [...existingItems, ...trulyNew] : existingItems;
+                     const finalValue   = existingValue   > 0 ? existingValue   : newValue;
+                     const finalTaxable = existingTaxable > 0 ? existingTaxable : newTaxable;
+                     const finalCgst    = existingCgst    > 0 ? existingCgst    : newCgst;
+                     const finalSgst    = existingSgst    > 0 ? existingSgst    : newSgst;
+                     const finalIgst    = existingIgst    > 0 ? existingIgst    : newIgst;
+
+                     const totalsChanged = finalValue !== existingValue || finalTaxable !== existingTaxable ||
+                                           finalCgst !== existingCgst   || finalSgst !== existingSgst || finalIgst !== existingIgst;
+                     const itemsChanged  = trulyNew.length > 0;
+
+                     if (itemsChanged || totalsChanged) {
+                         await new Promise((resolve, reject) => {
+                             db.run(
+                                 `UPDATE expenses SET
+                                     line_items = ?, line_items_count = ?, has_line_items = 1,
+                                     invoice_value = ?, taxable_amount = ?,
+                                     cgst_amount = ?, sgst_amount = ?, igst_amount = ?,
+                                     total_tax_amount = ?
+                                  WHERE id = ?`,
+                                 [
+                                     JSON.stringify(mergedItems), mergedItems.length,
+                                     finalValue, finalTaxable,
+                                     finalCgst, finalSgst, finalIgst,
+                                     finalCgst + finalSgst + finalIgst,
+                                     contentDuplicateCheck.id
+                                 ],
+                                 (err) => err ? reject(err) : resolve()
+                             );
+                         });
+                         const what = [itemsChanged ? `${trulyNew.length} new line items` : '', totalsChanged ? 'totals' : ''].filter(Boolean).join(' + ');
+                         console.log(`🔗 Merged ${what} into existing invoice ${extractedData.invoice_number} (ID: ${contentDuplicateCheck.id})`);
+                         await DuplicateDetector.safeDeleteFile(file.path);
+                         results.successful.push({
+                             filename: file.originalname,
+                             invoice_number: extractedData.invoice_number,
+                             message: `Continuation page merged: ${what}`
+                         });
+                         results.summary.successful++;
+                         continue;
+                     }
+
+                     // Nothing new at all — already fully processed continuation page
+                     await DuplicateDetector.safeDeleteFile(file.path);
+                     results.successful.push({
+                         filename: file.originalname,
+                         invoice_number: extractedData.invoice_number,
+                         message: 'Continuation page already merged — no new data'
+                     });
+                     results.summary.successful++;
+                     continue;
+                 }
+
+                 // Match was only via amount similarity, not invoice number or GSTN — genuine duplicate
                  await DuplicateDetector.safeDeleteFile(file.path);
                  results.duplicates.push({
                      filename: file.originalname,
-                     error: 'Content duplicate detected',
-                     details: `Invoice ${extractedData.invoice_number} already exists`
+                     error: 'Duplicate invoice detected',
+                     details: `Invoice ${extractedData.invoice_number || '(unknown)'} already exists`
                  });
                  results.summary.duplicates++;
                  continue;
@@ -5953,11 +6107,12 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
              
              results.summary.totalLineItems += extractedData.line_items_count || 0;
              
-             if (result.processingSource === 'parseur') {
+             if (result.processingSource === 'parseur' || result.processingSource === 'parseur_reprocessed') {
                  results.summary.parseurProcessed++;
-             } else {
+             } else if (result.processingSource === 'document_ai') {
                  results.summary.documentAIProcessed++;
              }
+             // claude / claude_reprocessed: primary processor, no fallback counter needed
              
              if (extractedData.parseur_document_id) {
                  results.summary.reprocessableDocuments++;
@@ -5968,9 +6123,8 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
              if (file && file.path) {
                  await DuplicateDetector.safeDeleteFile(file.path);
              }
-             
              results.failed.push({
-                 filename: validFile.filename,
+                 filename: validFile ? validFile.filename : (file ? file.originalname : '(unknown)'),
                  error: 'Processing failed',
                  details: error.message
              });
@@ -6312,11 +6466,24 @@ app.get('/api/dashboard-stats', (req, res) => {
  });
 });
 
+// Global multer error handler — catches "Unexpected field" and other multer errors
+// Must be registered BEFORE app.listen and AFTER all routes
+app.use((err, req, res, next) => {
+    if (err && err.code && err.code.startsWith('LIMIT_')) {
+        // Multer error
+        console.error(`❌ Multer error on ${req.method} ${req.path}: ${err.code} — field: ${err.field || 'unknown'}`);
+        return res.status(400).json({ success: false, error: `File upload error: ${err.message}` });
+    }
+    // Other errors
+    console.error(`❌ Unhandled error on ${req.method} ${req.path}:`, err.message);
+    res.status(500).json({ success: false, error: err.message });
+});
+
 // Initialize database and start server
 setupDatabase();
 setTimeout(initializePdfConverter, 1000);
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
  console.log('🚀 Simplifier - Enhanced Invoice Processing System with Fixed Ledger Standardization Timing');
  console.log(`📊 Server running on http://localhost:${PORT}`);
  console.log('');
@@ -6495,6 +6662,10 @@ app.listen(PORT, () => {
  console.log('   🎯 FIXED SOLUTION: Ledger standardization happens at the right time!');
  console.log('   📚 UNIVERSAL ALIASES: Any alias in master file will be properly mapped!');
 });
+
+// Disable HTTP socket timeout so long bulk-upload requests (multiple files × Claude API) never get dropped
+httpServer.timeout = 0;          // no per-request timeout
+httpServer.keepAliveTimeout = 0; // no keep-alive timeout
 
 // Graceful shutdown
 process.on('SIGINT', () => {

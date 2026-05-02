@@ -1816,8 +1816,9 @@ console.log('📦 Server response:', result);
             document.getElementById(formId).addEventListener('submit', async function(e) {
                 e.preventDefault();
                 
-                const fileInput = document.getElementById(`${tabType}-receipt`) || document.getElementById(`${tabType}-receipts`);
-                const files = fileInput.files;
+                const isBulk = formId.includes('bulk');
+                const fileInput = document.getElementById(isBulk ? `${tabType}-receipts` : `${tabType}-receipt`);
+                const files = fileInput ? fileInput.files : null;
                 
                 if (!files || files.length === 0) {
                     showNotification('Error', 'Please select a file to upload', 'error');
@@ -1846,21 +1847,30 @@ console.log('📦 Server response:', result);
                 
                 try {
                     const endpoint = formId.includes('bulk') ? '/api/upload-bulk' : '/api/upload-invoice';
+                    const isBulk = formId.includes('bulk');
+
+                    // Give bulk uploads 10 minutes, single uploads 3 minutes
+                    const timeoutMs = isBulk ? 10 * 60 * 1000 : 3 * 60 * 1000;
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
                     const response = await fetch(endpoint, {
                         method: 'POST',
-                        body: formData
+                        body: formData,
+                        signal: controller.signal
                     });
-                    
+                    clearTimeout(timeoutId);
+
                     const result = await response.json();
-                    
+
                     if (result.success) {
-                        const successMessage = formId.includes('bulk') 
+                        const successMessage = isBulk
                             ? `Bulk upload completed: ${result.summary.successful} successful, ${result.summary.failed} failed`
                             : `Invoice processed successfully: ${result.expense.invoice_number}`;
-                        
+
                         showNotification('Success', successMessage, 'success');
-                        
-                        if (formId.includes('bulk')) {
+
+                        if (isBulk) {
                             clearBulkFileSelection(tabType);
                             displayBulkUploadResult(result, tabType);
                         } else {
@@ -1876,7 +1886,11 @@ console.log('📦 Server response:', result);
                     }
                 } catch (error) {
                     console.error('Upload error:', error);
-                    showNotification('Error', 'Network error during upload', 'error');
+                    if (error.name === 'AbortError') {
+                        showNotification('Timeout', 'Upload timed out — the server is taking too long. Try uploading fewer files at once.', 'error');
+                    } else {
+                        showNotification('Error', 'Could not reach the server. Check that it is running and try again.', 'error');
+                    }
                 } finally {
                     // Reset loading state
                     uploadBtn.disabled = false;
@@ -3086,14 +3100,14 @@ console.log('📦 Server response:', result);
                                         </thead>
                                         <tbody class="bg-white divide-y divide-gray-200">
                                             ${lineItems.map(item => `
-                                                <tr>
+                                                <tr class="${(item.line_total < 0 || item.unit_rate < 0) ? 'bg-red-50' : ''}">
                                                     <td class="px-3 py-3 text-sm text-gray-900">${item.description || 'N/A'}</td>
                                                     <td class="px-3 py-3 text-sm text-gray-500">${item.hsn_code || item.hsn_sac || '-'}</td>
                                                     <td class="px-3 py-3 text-sm text-gray-900">${item.quantity || 1}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.unit_rate > 0 ? '₹' + (item.unit_rate).toFixed(2) : '-'}</td>
-                                                    <td class="px-3 py-3 text-sm font-medium text-gray-900">${item.line_total > 0 ? '₹' + (item.line_total).toFixed(2) : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm ${item.unit_rate < 0 ? 'text-red-600 font-medium' : 'text-gray-900'}">${item.unit_rate != null && item.unit_rate !== 0 ? '₹' + Number(item.unit_rate).toFixed(2) : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm font-medium ${item.line_total < 0 ? 'text-red-600' : 'text-gray-900'}">${item.line_total != null && item.line_total !== 0 ? '₹' + Number(item.line_total).toFixed(2) : '-'}</td>
                                                     <td class="px-3 py-3 text-sm text-gray-500">${item.tax_rate > 0 ? item.tax_rate + '%' : '-'}</td>
-                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.tax_amount > 0 ? '₹' + (item.tax_amount).toFixed(2) : '-'}</td>
+                                                    <td class="px-3 py-3 text-sm text-gray-900">${item.tax_amount > 0 ? '₹' + Number(item.tax_amount).toFixed(2) : '-'}</td>
                                                 </tr>
                                             `).join('')}
                                         </tbody>
