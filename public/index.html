@@ -1864,9 +1864,14 @@ console.log('📦 Server response:', result);
                     const result = await response.json();
 
                     if (result.success) {
-                        const successMessage = isBulk
-                            ? `Bulk upload completed: ${result.summary.successful} successful, ${result.summary.failed} failed`
-                            : `Invoice processed successfully: ${result.expense.invoice_number}`;
+                        let successMessage;
+                        if (isBulk) {
+                            successMessage = `Bulk upload completed: ${result.summary.successful} successful, ${result.summary.failed} failed`;
+                        } else if (result.multiple_invoices) {
+                            successMessage = result.message; // e.g. "Multi-invoice PDF: 2 invoices saved"
+                        } else {
+                            successMessage = `Invoice processed successfully: ${result.expense?.invoice_number || ''}`;
+                        }
 
                         showNotification('Success', successMessage, 'success');
 

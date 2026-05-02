@@ -3383,7 +3383,26 @@ class ClaudeInvoiceProcessor {
  }
 
  getExtractionPrompt() {
-     return `You are an expert invoice data extraction system for Indian GST invoices. Extract ALL data from this invoice and return ONLY a single valid JSON object with no text before or after it.
+     return `You are an expert invoice data extraction system for Indian GST invoices.
+
+IMPORTANT — MULTIPLE INVOICES DETECTION:
+If this document contains MORE THAN ONE separate invoice (identified by different invoice numbers, different dates, or a new invoice header starting mid-document), return a JSON ARRAY where each element is one complete invoice object.
+If the document contains exactly ONE invoice (even across multiple pages), return a single JSON object (not an array).
+Examples:
+- 5-page document, pages 1-2 = Invoice A, pages 3-5 = Invoice B → return [{...invoiceA}, {...invoiceB}]
+- 7-page document, all pages = one invoice → return {...invoice}
+
+LANGUAGE TRANSLATION RULE:
+If any text on the invoice is in a non-English language (Hindi, Marathi, Gujarati, Tamil, Telugu, Kannada, Bengali, or any other language), translate ALL extracted text fields into English before putting them in the JSON. This applies to: vendor_name, customer_name, vendor_address, description, and all line item descriptions. Numeric fields, GST numbers, invoice numbers, and dates must be extracted as-is (no translation needed). Examples:
+- "सर्वसाधारण कर (९०% घटक भुक्तासहित)" → "General Tax (90% component inclusive)"
+- "जल लाभ कर" → "Water Benefit Tax"
+- "स्वच्छाई कर / मलिन. सारण कर" → "Cleanliness Tax / Sewage Tax"
+- "नवी मुंबई महानगरपालिका" → "Navi Mumbai Municipal Corporation"
+
+Extract ALL data and return ONLY valid JSON (no markdown, no explanation).
+
+Required structure for each invoice object:
+{
 
 Required JSON structure:
 {
@@ -3445,11 +3464,12 @@ Rules:
 - ONLY populate cgst_amount, sgst_amount, igst_amount when you explicitly see the words "CGST", "SGST", "IGST", or "GST" with a rupee amount on the document.
 - BUYER vs CONSIGNEE: Many Indian GST invoices have a "Consignee" (delivery address) AND a separate "Buyer (if other than consignee)" or "Bill To" section. Always use the BUYER/BILL-TO party as customer_name and customer_gstn. The consignee is only the delivery recipient and should be ignored for customer fields.
 - Line items may include negative amounts (discounts, returns, adjustments, promotions) — include them as-is with negative values. Any row labelled as a discount, deduction, rebate, scheme, or return that has a negative or bracketed amount must have negative unit_rate and line_total (e.g. -3000, not 0).
-- Return ONLY the JSON object, no markdown, no explanation`;
+- Return ONLY the JSON (object or array), no markdown, no explanation`;
  }
 
  getSupplementaryPrompt(missingFields) {
      return `This is a continuation page of a multi-page invoice. Extract ONLY the fields listed below if visible on this page.
+If any text is in a non-English language (Hindi, Marathi, Gujarati, etc.), translate all text fields to English before returning them.
 
 Missing fields to find: ${missingFields.join(', ')}
 
@@ -3493,6 +3513,11 @@ Rules:
      try {
          return JSON.parse(jsonStr);
      } catch {
+         // Try array first, then single object
+         const arrMatch = rawText.match(/\[[\s\S]*\]/);
+         if (arrMatch) {
+             try { return JSON.parse(arrMatch[0]); } catch {}
+         }
          const match = rawText.match(/\{[\s\S]*\}/);
          if (!match) throw new Error('Claude response is not valid JSON');
          return JSON.parse(match[0]);
@@ -3599,11 +3624,22 @@ Rules:
      });
 
      const rawText = response.content[0].text.trim();
-     const extractedRaw = this.parseClaudeJSON(rawText);
-     if (Array.isArray(extractedRaw.line_items)) {
-         extractedRaw.line_items = this.filterSummaryLineItems(extractedRaw.line_items);
+     const parsed = this.parseClaudeJSON(rawText);
+
+     // Claude returned multiple invoices from a single PDF
+     if (Array.isArray(parsed)) {
+         const invoices = parsed.map(inv => {
+             if (Array.isArray(inv.line_items)) inv.line_items = this.filterSummaryLineItems(inv.line_items);
+             return inv;
+         });
+         return { extractedRaw: invoices[0], multipleInvoices: invoices, rawText };
      }
-     return { extractedRaw, rawText };
+
+     // Single invoice (normal case)
+     if (Array.isArray(parsed.line_items)) {
+         parsed.line_items = this.filterSummaryLineItems(parsed.line_items);
+     }
+     return { extractedRaw: parsed, rawText };
  }
 
  async processInvoice(filePath, originalName, voucherType = 'Purchase') {
@@ -3615,16 +3651,17 @@ Rules:
 
          // Route: PDF → Claude native document reader (bypasses font rendering issues)
          //        Image → page-by-page image conversion if available, else direct
-         let extractedRaw, rawText;
+         let extractedRaw, rawText, multipleInvoices;
          if (isPdf) {
              // Claude reads PDFs natively as documents — more reliable than image conversion
              // which fails for PDFs with non-standard embedded fonts (e.g. Aptos, subsetted Helvetica)
              const directResult = await this.processDirectFile(filePath, voucherType);
              extractedRaw = directResult.extractedRaw;
              rawText = directResult.rawText;
+             multipleInvoices = directResult.multipleInvoices; // set if Claude found >1 invoice
 
              // If native reading gave incomplete results, retry with page-by-page image conversion
-             if (!this.isExtractionComplete(extractedRaw) && pdfConversionAvailable) {
+             if (!multipleInvoices && !this.isExtractionComplete(extractedRaw) && pdfConversionAvailable) {
                  console.log('⚠️ Direct PDF reading incomplete — retrying with page-by-page image conversion...');
                  const imageResult = await this.processPdfAsImages(filePath, voucherType);
                  extractedRaw = imageResult.extractedRaw;
@@ -3635,9 +3672,23 @@ Rules:
              const result = await this.processDirectFile(filePath, voucherType);
              extractedRaw = result.extractedRaw;
              rawText = result.rawText;
+             multipleInvoices = result.multipleInvoices;
          }
 
          const processingTime = Date.now() - startTime;
+
+         // ── Multi-invoice PDF: return all invoices as an array ────────────────────────────
+         if (multipleInvoices && multipleInvoices.length > 1) {
+             console.log(`📄 Multi-invoice PDF detected: ${multipleInvoices.length} invoices in ${originalName}`);
+             const allExtracted = multipleInvoices.map(raw => {
+                 const ed = this.convertToInternalFormat(raw, voucherType);
+                 const warnings = this.validateGSTINs(ed);
+                 if (warnings.length > 0) ed.validation_warnings = JSON.stringify(warnings);
+                 return { ...ed, processing_time_ms: processingTime, confidence_score: 0.92, processing_source: 'claude' };
+             });
+             return { success: true, extractedData: allExtracted[0], multipleInvoices: allExtracted, rawText, processingTime };
+         }
+
          const extractedData = this.convertToInternalFormat(extractedRaw, voucherType);
 
          const gstinWarnings = this.validateGSTINs(extractedData);
@@ -4171,9 +4222,14 @@ class UnifiedDocumentProcessor {
 
              if (claudeResult.success) {
                  const finalData = this.applyEnhancedGSTLogic(claudeResult.extractedData, 'claude');
+                 // Pass multipleInvoices through if Claude found more than one invoice in this PDF
+                 const multipleInvoices = claudeResult.multipleInvoices
+                     ? claudeResult.multipleInvoices.map(inv => this.applyEnhancedGSTLogic(inv, 'claude'))
+                     : undefined;
                  return {
                      success: true,
                      extractedData: finalData,
+                     multipleInvoices,
                      rawText: claudeResult.rawText,
                      processingSource: 'claude',
                      processingTime: claudeResult.processingTime
@@ -4798,8 +4854,115 @@ app.post('/api/upload-invoice', upload.single('receipt'), async (req, res) => {
      
      // Process with enhanced system including voucher type
      const result = await UnifiedDocumentProcessor.processInvoice(req.file.path, req.file.originalname, voucherType);
+
+     // ── Multi-invoice PDF: insert all invoices and return combined response ──────────────
+     if (result.multipleInvoices && result.multipleInvoices.length > 1) {
+         console.log(`📄 Single-upload multi-invoice PDF: inserting ${result.multipleInvoices.length} invoices`);
+         const insertedInvoices = [];
+         const skippedDuplicates = [];
+
+         for (const invRaw of result.multipleInvoices) {
+             invRaw.voucher_type = voucherType;
+             invRaw.entry_type = 'upload';
+             if (invRaw.line_items && Array.isArray(invRaw.line_items)) {
+                 invRaw.line_items_count = invRaw.line_items.length;
+                 invRaw.has_line_items = invRaw.line_items_count > 0;
+             }
+
+             // Duplicate check per invoice
+             const dup = await new Promise((resolve, reject) => {
+                 if (!invRaw.invoice_number) return resolve(null);
+                 db.get(`SELECT id, invoice_number, vendor_name FROM expenses WHERE invoice_number = ? AND invoice_number != ''`,
+                     [invRaw.invoice_number], (err, row) => err ? reject(err) : resolve(row));
+             });
+             if (dup) {
+                 console.log(`⚠️  Invoice ${invRaw.invoice_number} already exists (ID: ${dup.id}) — skipping`);
+                 skippedDuplicates.push({ invoice_number: invRaw.invoice_number, vendor_name: invRaw.vendor_name });
+                 continue;
+             }
+
+             const insertSql = `INSERT INTO expenses (
+                 invoice_date, invoice_number, vendor_name, vendor_gstn, customer_name, customer_gstn, place_of_supply,
+                 taxable_amount, igst_amount, cgst_amount, sgst_amount, cess_amount, round_off, invoice_value,
+                 tds_rate, tds_amount, description, hsn_sac_code, line_item_amount, quantity, unit_rate,
+                 voucher_type, ledger_name, vendor_address, total_tax_amount,
+                 cgst_rate, sgst_rate, igst_rate, cess_rate, category, file_path, original_filename, file_hash,
+                 parseur_document_id, extracted_text,
+                 confidence_score, amount_confidence, document_type, processing_time_ms, status, processing_source,
+                 line_items, line_items_count, has_line_items, table_structure_confidence,
+                 processing_method, validation_errors, validation_warnings, entry_type
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+             const vals = [
+                 prepareDateValue(invRaw.invoice_date, 'invoice_date'),
+                 prepareValue(invRaw.invoice_number, 'invoice_number'),
+                 prepareValue(invRaw.vendor_name, 'vendor_name') || 'Unknown Vendor',
+                 prepareValue(invRaw.vendor_gstn, 'vendor_gstn'),
+                 prepareValue(invRaw.customer_name, 'customer_name'),
+                 prepareValue(invRaw.customer_gstn, 'customer_gstn'),
+                 prepareValue(invRaw.place_of_supply, 'place_of_supply'),
+                 prepareNumericValue(invRaw.taxable_amount || invRaw.taxable_value, 'taxable_amount'),
+                 prepareNumericValue(invRaw.igst_amount, 'igst_amount'),
+                 prepareNumericValue(invRaw.cgst_amount, 'cgst_amount'),
+                 prepareNumericValue(invRaw.sgst_amount, 'sgst_amount'),
+                 prepareNumericValue(invRaw.cess_amount, 'cess_amount'),
+                 prepareNumericValue(invRaw.round_off, 'round_off'),
+                 prepareNumericValue(invRaw.invoice_value || invRaw.amount, 'invoice_value'),
+                 prepareNumericValue(invRaw.tds_rate, 'tds_rate'),
+                 prepareNumericValue(invRaw.tds_amount, 'tds_amount'),
+                 prepareValue(invRaw.description, 'description'),
+                 prepareValue(invRaw.hsn_sac_code, 'hsn_sac_code'),
+                 prepareNumericValue(invRaw.line_item_amount, 'line_item_amount'),
+                 prepareNumericValue(invRaw.quantity, 'quantity'),
+                 prepareNumericValue(invRaw.unit_rate, 'unit_rate'),
+                 prepareValue(invRaw.voucher_type, 'voucher_type') || voucherType,
+                 prepareValue(invRaw.ledger_name, 'ledger_name'),
+                 prepareValue(invRaw.vendor_address, 'vendor_address'),
+                 prepareNumericValue(invRaw.total_tax_amount, 'total_tax_amount'),
+                 prepareNumericValue(invRaw.cgst_rate, 'cgst_rate'),
+                 prepareNumericValue(invRaw.sgst_rate, 'sgst_rate'),
+                 prepareNumericValue(invRaw.igst_rate, 'igst_rate'),
+                 prepareNumericValue(invRaw.cess_rate, 'cess_rate'),
+                 prepareValue(invRaw.category, 'category') || 'General',
+                 req.file.path,
+                 req.file.originalname,
+                 duplicateCheck.fileHash,
+                 prepareValue(invRaw.parseur_document_id, 'parseur_document_id'),
+                 prepareValue(result.rawText, 'extracted_text'),
+                 prepareNumericValue(invRaw.confidence_score, 'confidence_score', 0.8),
+                 prepareNumericValue(invRaw.amount_confidence, 'amount_confidence', 0.8),
+                 documentType,
+                 prepareNumericValue(invRaw.processing_time_ms, 'processing_time_ms', 0),
+                 'pending_review',
+                 prepareValue(invRaw.processing_source || result.processingSource, 'processing_source'),
+                 JSON.stringify(invRaw.line_items || []),
+                 prepareNumericValue(invRaw.line_items_count, 'line_items_count', 0),
+                 prepareBooleanValue(invRaw.has_line_items, 'has_line_items'),
+                 prepareNumericValue(invRaw.table_structure_confidence, 'table_structure_confidence', 0),
+                 prepareValue(invRaw.processing_method, 'processing_method') || 'auto',
+                 prepareValue(invRaw.validation_errors, 'validation_errors') || '[]',
+                 prepareValue(invRaw.validation_warnings, 'validation_warnings') || '[]',
+                 'upload'
+             ];
+             const newId = await new Promise((resolve, reject) => {
+                 db.run(insertSql, vals, function(err) { err ? reject(err) : resolve(this.lastID); });
+             });
+             console.log(`✅ Invoice ${invRaw.invoice_number} saved, ID: ${newId}`);
+             insertedInvoices.push({ id: newId, invoice_number: invRaw.invoice_number, vendor_name: invRaw.vendor_name, invoice_value: invRaw.invoice_value });
+         }
+
+         return res.json({
+             success: true,
+             message: `Multi-invoice PDF: ${insertedInvoices.length} invoices saved${skippedDuplicates.length ? `, ${skippedDuplicates.length} already existed` : ''}`,
+             multiple_invoices: true,
+             invoices: insertedInvoices,
+             duplicates_skipped: skippedDuplicates,
+             // Keep backward-compatible `expense` field pointing to first inserted invoice
+             expense: insertedInvoices[0] ? { ...insertedInvoices[0], line_items_count: result.multipleInvoices[0]?.line_items_count || 0 } : null
+         });
+     }
+
      const extractedData = result.extractedData;
-     
+
      // Ensure voucher type is set
      extractedData.voucher_type = voucherType;
      extractedData.entry_type = 'upload';
@@ -4812,7 +4975,7 @@ app.post('/api/upload-invoice', upload.single('receipt'), async (req, res) => {
          extractedData.line_items_count = 0;
          extractedData.has_line_items = false;
      }
-     
+
      console.log(`📊 Processing result (${result.processingSource}):`, {
          vendor: extractedData.vendor_name,
          amount: extractedData.invoice_value,
@@ -4822,27 +4985,18 @@ app.post('/api/upload-invoice', upload.single('receipt'), async (req, res) => {
          voucherType: extractedData.voucher_type,
          parseurDocId: extractedData.parseur_document_id || 'N/A'
      });
-     
-     // Additional duplicate checking based on invoice content
+
+     // Additional duplicate checking based on invoice content (invoice number only)
      const contentDuplicateCheck = await new Promise((resolve, reject) => {
-         const sql = `SELECT * FROM expenses 
-             WHERE (invoice_number = ? AND invoice_number != '' AND invoice_number != 'null') 
-             OR (vendor_gstn = ? AND vendor_gstn != '' AND vendor_gstn != 'null' AND ABS(invoice_value - ?) < 1)`;
-         
-         db.get(sql, [
-             extractedData.invoice_number,
-             extractedData.vendor_gstn,
-             extractedData.invoice_value || extractedData.amount
-         ], (err, row) => {
-             if (err) reject(err);
-             else resolve(row);
-         });
+         if (!extractedData.invoice_number || extractedData.invoice_number === '' || extractedData.invoice_number === 'null') return resolve(null);
+         db.get(`SELECT * FROM expenses WHERE invoice_number = ? AND invoice_number != '' AND invoice_number != 'null'`,
+             [extractedData.invoice_number], (err, row) => err ? reject(err) : resolve(row));
      });
-     
-     if (contentDuplicateCheck && extractedData.invoice_number && extractedData.vendor_gstn) {
+
+     if (contentDuplicateCheck) {
          // Clean up uploaded file
          await DuplicateDetector.safeDeleteFile(req.file.path);
-         
+
          return res.status(409).json({
              success: false,
              error: 'Duplicate invoice detected',
@@ -5871,6 +6025,162 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
      results.failed = bulkValidation.errors;
      results.summary.failed += bulkValidation.errors.length;
      
+     // ── Shared DB insert helper (used for single-invoice and each invoice in multi-invoice PDFs) ──
+     const insertExtractedInvoice = async (extractedData, file, validFile, result, voucherType, results) => {
+         // Duplicate / continuation check
+         const contentDuplicateCheck = await new Promise((resolve, reject) => {
+             const hasInvoiceNumber = extractedData.invoice_number && extractedData.invoice_number !== '' && extractedData.invoice_number !== 'null';
+             const hasGstn = extractedData.vendor_gstn && extractedData.vendor_gstn !== '' && extractedData.vendor_gstn !== 'null';
+             let sql, params;
+             if (hasInvoiceNumber) {
+                 sql = `SELECT * FROM expenses WHERE invoice_number = ? AND invoice_number != '' AND invoice_number != 'null'`;
+                 params = [extractedData.invoice_number];
+             } else if (hasGstn) {
+                 sql = `SELECT * FROM expenses WHERE vendor_gstn = ? AND vendor_gstn != '' AND vendor_gstn != 'null' ORDER BY id DESC LIMIT 1`;
+                 params = [extractedData.vendor_gstn];
+             } else {
+                 return resolve(null);
+             }
+             db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
+         });
+
+         if (contentDuplicateCheck && extractedData.invoice_number) {
+             const newItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
+             const meaningfulNewItems = newItems.filter(i => i.description && i.description.trim().length > 2);
+             const invoiceNumberMatches = contentDuplicateCheck.invoice_number === extractedData.invoice_number && extractedData.invoice_number !== '';
+             const newInvoiceNumberMissing = !extractedData.invoice_number || extractedData.invoice_number === '' || extractedData.invoice_number === 'null';
+             const gstnMatches = contentDuplicateCheck.vendor_gstn && extractedData.vendor_gstn && contentDuplicateCheck.vendor_gstn === extractedData.vendor_gstn;
+             const isSameInvoice = invoiceNumberMatches || (gstnMatches && newInvoiceNumberMissing);
+
+             if (isSameInvoice) {
+                 let existingItems = [];
+                 try { existingItems = JSON.parse(contentDuplicateCheck.line_items || '[]'); } catch (_) {}
+                 const existingDescs = new Set(existingItems.map(i => (i.description || '').trim().toLowerCase()));
+                 const trulyNew = meaningfulNewItems.filter(i => !existingDescs.has((i.description || '').trim().toLowerCase()));
+                 const existingValue = parseFloat(contentDuplicateCheck.invoice_value) || 0;
+                 const existingTaxable = parseFloat(contentDuplicateCheck.taxable_amount) || 0;
+                 const existingCgst = parseFloat(contentDuplicateCheck.cgst_amount) || 0;
+                 const existingSgst = parseFloat(contentDuplicateCheck.sgst_amount) || 0;
+                 const existingIgst = parseFloat(contentDuplicateCheck.igst_amount) || 0;
+                 const newValue = parseFloat(extractedData.invoice_value) || 0;
+                 const newTaxable = parseFloat(extractedData.taxable_amount) || 0;
+                 const newCgst = parseFloat(extractedData.cgst_amount) || 0;
+                 const newSgst = parseFloat(extractedData.sgst_amount) || 0;
+                 const newIgst = parseFloat(extractedData.igst_amount) || 0;
+                 const mergedItems = trulyNew.length > 0 ? [...existingItems, ...trulyNew] : existingItems;
+                 const finalValue = existingValue > 0 ? existingValue : newValue;
+                 const finalTaxable = existingTaxable > 0 ? existingTaxable : newTaxable;
+                 const finalCgst = existingCgst > 0 ? existingCgst : newCgst;
+                 const finalSgst = existingSgst > 0 ? existingSgst : newSgst;
+                 const finalIgst = existingIgst > 0 ? existingIgst : newIgst;
+                 const totalsChanged = finalValue !== existingValue || finalTaxable !== existingTaxable || finalCgst !== existingCgst || finalSgst !== existingSgst || finalIgst !== existingIgst;
+                 const itemsChanged = trulyNew.length > 0;
+                 if (itemsChanged || totalsChanged) {
+                     await new Promise((resolve, reject) => {
+                         db.run(`UPDATE expenses SET line_items=?, line_items_count=?, has_line_items=1, invoice_value=?, taxable_amount=?, cgst_amount=?, sgst_amount=?, igst_amount=?, total_tax_amount=? WHERE id=?`,
+                             [JSON.stringify(mergedItems), mergedItems.length, finalValue, finalTaxable, finalCgst, finalSgst, finalIgst, finalCgst + finalSgst + finalIgst, contentDuplicateCheck.id],
+                             (err) => err ? reject(err) : resolve());
+                     });
+                     const what = [itemsChanged ? `${trulyNew.length} new line items` : '', totalsChanged ? 'totals' : ''].filter(Boolean).join(' + ');
+                     console.log(`🔗 Merged ${what} into existing invoice ${extractedData.invoice_number} (ID: ${contentDuplicateCheck.id})`);
+                     results.successful.push({ filename: file.originalname, invoice_number: extractedData.invoice_number, message: `Continuation page merged: ${what}` });
+                     results.summary.successful++;
+                 } else {
+                     results.successful.push({ filename: file.originalname, invoice_number: extractedData.invoice_number, message: 'Continuation page already merged — no new data' });
+                     results.summary.successful++;
+                 }
+                 return; // handled as continuation
+             }
+
+             // Different invoice numbers — genuine duplicate
+             results.duplicates.push({ filename: file.originalname, error: 'Duplicate invoice detected', details: `Invoice ${extractedData.invoice_number || '(unknown)'} already exists` });
+             results.summary.duplicates++;
+             return;
+         }
+
+         // Fresh insert
+         const insertSql = `INSERT INTO expenses (
+             invoice_date, invoice_number, vendor_name, vendor_gstn, customer_name, customer_gstn, place_of_supply,
+             taxable_amount, igst_amount, cgst_amount, sgst_amount, cess_amount, round_off, invoice_value,
+             tds_rate, tds_amount, description, hsn_sac_code, line_item_amount, quantity, unit_rate,
+             voucher_type, ledger_name, vendor_address, total_tax_amount,
+             cgst_rate, sgst_rate, igst_rate, cess_rate, category, file_path, original_filename, file_hash,
+             parseur_document_id, extracted_text,
+             confidence_score, amount_confidence, document_type, processing_time_ms, status, processing_source,
+             line_items, line_items_count, has_line_items, table_structure_confidence,
+             processing_method, validation_errors, validation_warnings, entry_type
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+         const values = [
+             prepareDateValue(extractedData.invoice_date, 'invoice_date'),
+             prepareValue(extractedData.invoice_number, 'invoice_number'),
+             prepareValue(extractedData.vendor_name, 'vendor_name') || 'Unknown Vendor',
+             prepareValue(extractedData.vendor_gstn, 'vendor_gstn'),
+             prepareValue(extractedData.customer_name, 'customer_name'),
+             prepareValue(extractedData.customer_gstn, 'customer_gstn'),
+             prepareValue(extractedData.place_of_supply, 'place_of_supply'),
+             prepareNumericValue(extractedData.taxable_amount || extractedData.taxable_value, 'taxable_amount'),
+             prepareNumericValue(extractedData.igst_amount, 'igst_amount'),
+             prepareNumericValue(extractedData.cgst_amount, 'cgst_amount'),
+             prepareNumericValue(extractedData.sgst_amount, 'sgst_amount'),
+             prepareNumericValue(extractedData.cess_amount, 'cess_amount'),
+             prepareNumericValue(extractedData.round_off, 'round_off'),
+             prepareNumericValue(extractedData.invoice_value || extractedData.amount, 'invoice_value'),
+             prepareNumericValue(extractedData.tds_rate, 'tds_rate'),
+             prepareNumericValue(extractedData.tds_amount, 'tds_amount'),
+             prepareValue(extractedData.description, 'description'),
+             prepareValue(extractedData.hsn_sac_code, 'hsn_sac_code'),
+             prepareNumericValue(extractedData.line_item_amount, 'line_item_amount'),
+             prepareNumericValue(extractedData.quantity, 'quantity'),
+             prepareNumericValue(extractedData.unit_rate, 'unit_rate'),
+             prepareValue(extractedData.voucher_type, 'voucher_type') || voucherType,
+             prepareValue(extractedData.ledger_name, 'ledger_name'),
+             prepareValue(extractedData.vendor_address, 'vendor_address'),
+             prepareNumericValue(extractedData.total_tax_amount, 'total_tax_amount'),
+             prepareNumericValue(extractedData.cgst_rate, 'cgst_rate'),
+             prepareNumericValue(extractedData.sgst_rate, 'sgst_rate'),
+             prepareNumericValue(extractedData.igst_rate, 'igst_rate'),
+             prepareNumericValue(extractedData.cess_rate, 'cess_rate'),
+             prepareValue(extractedData.category, 'category') || 'General',
+             file.path,
+             file.originalname,
+             validFile.validation.fileHash,
+             prepareValue(extractedData.parseur_document_id, 'parseur_document_id'),
+             prepareValue(result.rawText, 'extracted_text'),
+             prepareNumericValue(extractedData.confidence_score, 'confidence_score', 0.8),
+             prepareNumericValue(extractedData.amount_confidence, 'amount_confidence', 0.8),
+             path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image',
+             prepareNumericValue(extractedData.processing_time_ms, 'processing_time_ms', 0),
+             'pending_review',
+             prepareValue(extractedData.processing_source || result.processingSource, 'processing_source'),
+             JSON.stringify(extractedData.line_items || []),
+             prepareNumericValue(extractedData.line_items_count, 'line_items_count', 0),
+             prepareBooleanValue(extractedData.has_line_items, 'has_line_items'),
+             prepareNumericValue(extractedData.table_structure_confidence, 'table_structure_confidence', 0),
+             prepareValue(extractedData.processing_method, 'processing_method') || 'auto',
+             prepareValue(extractedData.validation_errors, 'validation_errors') || '[]',
+             prepareValue(extractedData.validation_warnings, 'validation_warnings') || '[]',
+             'bulk_upload'
+         ];
+         await new Promise((resolve, reject) => { db.run(insertSql, values, function(err) { if (err) reject(err); else resolve(this.lastID); }); });
+         results.successful.push({
+             filename: file.originalname,
+             expense: {
+                 invoice_number: extractedData.invoice_number,
+                 vendor_name: extractedData.vendor_name,
+                 invoice_value: extractedData.invoice_value || extractedData.amount,
+                 line_items_count: extractedData.line_items_count || 0,
+                 processing_source: result.processingSource,
+                 voucher_type: extractedData.voucher_type,
+                 can_reprocess: !!(extractedData.parseur_document_id),
+                 parseur_document_id: extractedData.parseur_document_id || null
+             }
+         });
+         results.summary.totalLineItems += extractedData.line_items_count || 0;
+         if (result.processingSource === 'parseur' || result.processingSource === 'parseur_reprocessed') results.summary.parseurProcessed++;
+         else if (result.processingSource === 'document_ai') results.summary.documentAIProcessed++;
+         if (extractedData.parseur_document_id) results.summary.reprocessableDocuments++;
+     };
+
      // ── Phase 1: Run all Claude AI extractions IN PARALLEL ──────────────────────────────────
      // This reduces total wait from N×30s to ~30s for any batch size.
      // DB operations remain sequential below to avoid SQLite write contention.
@@ -5898,225 +6208,22 @@ app.post('/api/upload-bulk', upload.array('receipts', 20), async (req, res) => {
              if (!val || val.skipped) continue;
              ({ file, validFile, result } = val);
 
+             // ── Multi-invoice PDF: expand into individual invoices and process each ───────
+             if (result.multipleInvoices && result.multipleInvoices.length > 1) {
+                 console.log(`📄 Expanding ${result.multipleInvoices.length} invoices from ${file.originalname}`);
+                 for (const invData of result.multipleInvoices) {
+                     invData.voucher_type = voucherType;
+                     invData.entry_type = 'bulk_upload';
+                     // Reuse the same DB insert helper by temporarily overriding result.extractedData
+                     await insertExtractedInvoice(invData, file, validFile, result, voucherType, results);
+                 }
+                 continue; // skip the single-invoice path below
+             }
+
              const extractedData = result.extractedData;
-             
-             // Ensure voucher type is set
              extractedData.voucher_type = voucherType;
              extractedData.entry_type = 'bulk_upload';
-             
-             // Check for content duplicates in database
-             const contentDuplicateCheck = await new Promise((resolve, reject) => {
-                 const sql = `SELECT * FROM expenses 
-                     WHERE (invoice_number = ? AND invoice_number != '' AND invoice_number != 'null') 
-                     OR (vendor_gstn = ? AND vendor_gstn != '' AND vendor_gstn != 'null' AND ABS(invoice_value - ?) < 1)`;
-                 
-                 db.get(sql, [
-                     extractedData.invoice_number,
-                     extractedData.vendor_gstn,
-                     extractedData.invoice_value || extractedData.amount
-                 ], (err, row) => {
-                     if (err) reject(err);
-                     else resolve(row);
-                 });
-             });
-             
-             if (contentDuplicateCheck && extractedData.invoice_number) {
-                 // Same invoice number already exists — check if this is a continuation page to merge
-                 const newItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
-                 const meaningfulNewItems = newItems.filter(i => i.description && i.description.trim().length > 2);
-
-                 // Treat as same invoice if:
-                 // (a) invoice numbers match exactly — strong signal it's the same doc, GSTN extraction may vary page to page
-                 // (b) OR vendor GSTNs match — covers the case where invoice number wasn't extracted from the new page
-                 const invoiceNumberMatches = contentDuplicateCheck.invoice_number === extractedData.invoice_number
-                                              && extractedData.invoice_number !== '';
-                 const gstnMatches = contentDuplicateCheck.vendor_gstn && extractedData.vendor_gstn &&
-                                     contentDuplicateCheck.vendor_gstn === extractedData.vendor_gstn;
-                 const isSameInvoice = invoiceNumberMatches || gstnMatches;
-
-                 if (isSameInvoice) {
-                     let existingItems = [];
-                     try { existingItems = JSON.parse(contentDuplicateCheck.line_items || '[]'); } catch (_) {}
-
-                     const existingDescs = new Set(existingItems.map(i => (i.description || '').trim().toLowerCase()));
-                     const trulyNew = meaningfulNewItems.filter(i => !existingDescs.has((i.description || '').trim().toLowerCase()));
-
-                     // Build UPDATE fields — always merge line items; also fill in missing totals
-                     // (e.g. page 1 has no totals, page 2 has them — or vice versa)
-                     const existingValue   = parseFloat(contentDuplicateCheck.invoice_value)   || 0;
-                     const existingTaxable = parseFloat(contentDuplicateCheck.taxable_amount)  || 0;
-                     const existingCgst    = parseFloat(contentDuplicateCheck.cgst_amount)     || 0;
-                     const existingSgst    = parseFloat(contentDuplicateCheck.sgst_amount)     || 0;
-                     const existingIgst    = parseFloat(contentDuplicateCheck.igst_amount)     || 0;
-
-                     const newValue   = parseFloat(extractedData.invoice_value)   || 0;
-                     const newTaxable = parseFloat(extractedData.taxable_amount)  || 0;
-                     const newCgst    = parseFloat(extractedData.cgst_amount)     || 0;
-                     const newSgst    = parseFloat(extractedData.sgst_amount)     || 0;
-                     const newIgst    = parseFloat(extractedData.igst_amount)     || 0;
-
-                     const mergedItems  = trulyNew.length > 0 ? [...existingItems, ...trulyNew] : existingItems;
-                     const finalValue   = existingValue   > 0 ? existingValue   : newValue;
-                     const finalTaxable = existingTaxable > 0 ? existingTaxable : newTaxable;
-                     const finalCgst    = existingCgst    > 0 ? existingCgst    : newCgst;
-                     const finalSgst    = existingSgst    > 0 ? existingSgst    : newSgst;
-                     const finalIgst    = existingIgst    > 0 ? existingIgst    : newIgst;
-
-                     const totalsChanged = finalValue !== existingValue || finalTaxable !== existingTaxable ||
-                                           finalCgst !== existingCgst   || finalSgst !== existingSgst || finalIgst !== existingIgst;
-                     const itemsChanged  = trulyNew.length > 0;
-
-                     if (itemsChanged || totalsChanged) {
-                         await new Promise((resolve, reject) => {
-                             db.run(
-                                 `UPDATE expenses SET
-                                     line_items = ?, line_items_count = ?, has_line_items = 1,
-                                     invoice_value = ?, taxable_amount = ?,
-                                     cgst_amount = ?, sgst_amount = ?, igst_amount = ?,
-                                     total_tax_amount = ?
-                                  WHERE id = ?`,
-                                 [
-                                     JSON.stringify(mergedItems), mergedItems.length,
-                                     finalValue, finalTaxable,
-                                     finalCgst, finalSgst, finalIgst,
-                                     finalCgst + finalSgst + finalIgst,
-                                     contentDuplicateCheck.id
-                                 ],
-                                 (err) => err ? reject(err) : resolve()
-                             );
-                         });
-                         const what = [itemsChanged ? `${trulyNew.length} new line items` : '', totalsChanged ? 'totals' : ''].filter(Boolean).join(' + ');
-                         console.log(`🔗 Merged ${what} into existing invoice ${extractedData.invoice_number} (ID: ${contentDuplicateCheck.id})`);
-                         await DuplicateDetector.safeDeleteFile(file.path);
-                         results.successful.push({
-                             filename: file.originalname,
-                             invoice_number: extractedData.invoice_number,
-                             message: `Continuation page merged: ${what}`
-                         });
-                         results.summary.successful++;
-                         continue;
-                     }
-
-                     // Nothing new at all — already fully processed continuation page
-                     await DuplicateDetector.safeDeleteFile(file.path);
-                     results.successful.push({
-                         filename: file.originalname,
-                         invoice_number: extractedData.invoice_number,
-                         message: 'Continuation page already merged — no new data'
-                     });
-                     results.summary.successful++;
-                     continue;
-                 }
-
-                 // Match was only via amount similarity, not invoice number or GSTN — genuine duplicate
-                 await DuplicateDetector.safeDeleteFile(file.path);
-                 results.duplicates.push({
-                     filename: file.originalname,
-                     error: 'Duplicate invoice detected',
-                     details: `Invoice ${extractedData.invoice_number || '(unknown)'} already exists`
-                 });
-                 results.summary.duplicates++;
-                 continue;
-             }
-             
-             // Insert into database with enhanced schema
-             const insertSql = `INSERT INTO expenses (
-                 invoice_date, invoice_number, vendor_name, vendor_gstn, customer_name, customer_gstn, place_of_supply,
-                 taxable_amount, igst_amount, cgst_amount, sgst_amount, cess_amount, round_off, invoice_value,
-                 tds_rate, tds_amount, description, hsn_sac_code, line_item_amount, quantity, unit_rate,
-                 voucher_type, ledger_name, vendor_address, total_tax_amount,
-                 cgst_rate, sgst_rate, igst_rate, cess_rate, category, file_path, original_filename, file_hash, 
-                 parseur_document_id, extracted_text,
-                 confidence_score, amount_confidence, document_type, processing_time_ms, status, processing_source,
-                 line_items, line_items_count, has_line_items, table_structure_confidence,
-                 processing_method, validation_errors, validation_warnings, entry_type
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-             
-             const values = [
-                 prepareDateValue(extractedData.invoice_date, 'invoice_date'),
-                 prepareValue(extractedData.invoice_number, 'invoice_number'),
-                 prepareValue(extractedData.vendor_name, 'vendor_name') || 'Unknown Vendor',
-                 prepareValue(extractedData.vendor_gstn, 'vendor_gstn'),
-                 prepareValue(extractedData.customer_name, 'customer_name'),
-                 prepareValue(extractedData.customer_gstn, 'customer_gstn'),
-                 prepareValue(extractedData.place_of_supply, 'place_of_supply'),
-                 prepareNumericValue(extractedData.taxable_amount || extractedData.taxable_value, 'taxable_amount'),
-                 prepareNumericValue(extractedData.igst_amount, 'igst_amount'),
-                 prepareNumericValue(extractedData.cgst_amount, 'cgst_amount'),
-                 prepareNumericValue(extractedData.sgst_amount, 'sgst_amount'),
-                 prepareNumericValue(extractedData.cess_amount, 'cess_amount'),
-                 prepareNumericValue(extractedData.round_off, 'round_off'),
-                 prepareNumericValue(extractedData.invoice_value || extractedData.amount, 'invoice_value'),
-                 prepareNumericValue(extractedData.tds_rate, 'tds_rate'),
-                 prepareNumericValue(extractedData.tds_amount, 'tds_amount'),
-                 prepareValue(extractedData.description, 'description'),
-                 prepareValue(extractedData.hsn_sac_code, 'hsn_sac_code'),
-                 prepareNumericValue(extractedData.line_item_amount, 'line_item_amount'),
-                 prepareNumericValue(extractedData.quantity, 'quantity'),
-                 prepareNumericValue(extractedData.unit_rate, 'unit_rate'),
-                 prepareValue(extractedData.voucher_type, 'voucher_type') || voucherType,
-                 prepareValue(extractedData.ledger_name, 'ledger_name'),
-                 prepareValue(extractedData.vendor_address, 'vendor_address'),
-                 prepareNumericValue(extractedData.total_tax_amount, 'total_tax_amount'),
-                 prepareNumericValue(extractedData.cgst_rate, 'cgst_rate'),
-                 prepareNumericValue(extractedData.sgst_rate, 'sgst_rate'),
-                 prepareNumericValue(extractedData.igst_rate, 'igst_rate'),
-                 prepareNumericValue(extractedData.cess_rate, 'cess_rate'),
-                 prepareValue(extractedData.category, 'category') || 'General',
-                 file.path,
-                 file.originalname,
-                 validFile.validation.fileHash, // Use computed hash from validation
-                 prepareValue(extractedData.parseur_document_id, 'parseur_document_id'), // 🧠 Store for reprocessing
-                 prepareValue(result.rawText, 'extracted_text'),
-                 prepareNumericValue(extractedData.confidence_score, 'confidence_score', 0.8),
-                 prepareNumericValue(extractedData.amount_confidence, 'amount_confidence', 0.8),
-                 path.extname(file.originalname).toLowerCase() === '.pdf' ? 'pdf' : 'image',
-                 prepareNumericValue(extractedData.processing_time_ms, 'processing_time_ms', 0),
-                 'pending_review',
-                 prepareValue(extractedData.processing_source || result.processingSource, 'processing_source'),
-                 JSON.stringify(extractedData.line_items || []),
-                 prepareNumericValue(extractedData.line_items_count, 'line_items_count', 0),
-                 prepareBooleanValue(extractedData.has_line_items, 'has_line_items'),
-                 prepareNumericValue(extractedData.table_structure_confidence, 'table_structure_confidence', 0),
-                 prepareValue(extractedData.processing_method, 'processing_method') || 'auto',
-                 prepareValue(extractedData.validation_errors, 'validation_errors') || '[]',
-                 prepareValue(extractedData.validation_warnings, 'validation_warnings') || '[]',
-                 'bulk_upload'
-             ];
-             
-             await new Promise((resolve, reject) => {
-                 db.run(insertSql, values, function(err) {
-                     if (err) reject(err);
-                     else resolve(this.lastID);
-                 });
-             });
-             
-             results.successful.push({
-                 filename: file.originalname,
-                 expense: {
-                     invoice_number: extractedData.invoice_number,
-                     vendor_name: extractedData.vendor_name,
-                     invoice_value: extractedData.invoice_value || extractedData.amount,
-                     line_items_count: extractedData.line_items_count || 0,
-                     processing_source: result.processingSource,
-                     voucher_type: extractedData.voucher_type,
-                     can_reprocess: !!(extractedData.parseur_document_id),
-                     parseur_document_id: extractedData.parseur_document_id || null
-                 }
-             });
-             
-             results.summary.totalLineItems += extractedData.line_items_count || 0;
-             
-             if (result.processingSource === 'parseur' || result.processingSource === 'parseur_reprocessed') {
-                 results.summary.parseurProcessed++;
-             } else if (result.processingSource === 'document_ai') {
-                 results.summary.documentAIProcessed++;
-             }
-             // claude / claude_reprocessed: primary processor, no fallback counter needed
-             
-             if (extractedData.parseur_document_id) {
-                 results.summary.reprocessableDocuments++;
-             }
+             await insertExtractedInvoice(extractedData, file, validFile, result, voucherType, results);
              
          } catch (error) {
              // Clean up file on error
