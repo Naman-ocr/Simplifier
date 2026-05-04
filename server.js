@@ -19,6 +19,9 @@ const timezone = require('dayjs/plugin/timezone');
 const advancedFormat = require('dayjs/plugin/advancedFormat');
 const localizedFormat = require('dayjs/plugin/localizedFormat');
 const { XMLBuilder } = require('fast-xml-parser'); // Added for Tally XML generation
+const { initTallySchema } = require('./tally/db-schema');
+const tallyRoutes = require('./tally/tally-routes');
+const tallyPushRoutes = require('./tally/tally-push');
 
 //Naman
 // Enable plugins
@@ -71,6 +74,10 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// Tally integration routes
+app.use('/api', tallyRoutes);
+app.use('/api', tallyPushRoutes);
 
 // 🆕 NEW LEDGER STANDARDIZATION CLASS
 class LedgerStandardizer {
@@ -1763,8 +1770,8 @@ class LineItemsValidator {
          errors.push(`Line item ${index + 1}: Quantity must be greater than 0`);
      }
      
-     if (!item.unit_rate || item.unit_rate < 0) {
-         errors.push(`Line item ${index + 1}: Unit rate must be greater than or equal to 0`);
+     if (item.unit_rate === undefined || item.unit_rate === null || item.unit_rate === '' || parseFloat(item.unit_rate) < 0) {
+         errors.push(`Line item ${index + 1}: Unit rate must be 0 or greater`);
      }
      
      if (item.tax_rate === undefined || item.tax_rate < 0 || item.tax_rate > 100) {
@@ -1789,12 +1796,15 @@ class LineItemsValidator {
   */
  static processLineItem(item) {
      const quantity = parseFloat(item.quantity) || 1;
-     const unitRate = parseFloat(item.unit_rate) || 0;
-     const taxRate = parseFloat(item.tax_rate) || 18;
-     
-     // Calculate line total
-     const lineTotal = this.roundToTwoDecimals(quantity * unitRate);
-     
+     const unitRate = parseFloat(item.unit_rate) ?? 0;
+     const taxRate = parseFloat(item.tax_rate) ?? 0;
+
+     // When rate is 0, preserve the manually entered line_total (e.g. energy charges billed by formula)
+     const calculatedTotal = this.roundToTwoDecimals(quantity * unitRate);
+     const lineTotal = (unitRate === 0 && item.line_total > 0)
+         ? this.roundToTwoDecimals(parseFloat(item.line_total))
+         : calculatedTotal;
+
      // Calculate tax amount
      const taxAmount = this.roundToTwoDecimals((lineTotal * taxRate) / 100);
      
@@ -1983,6 +1993,8 @@ function setupDatabase() {
      }
      
      console.log('✅ Database setup complete');
+     app.set('db', db);
+     initTallySchema(db).catch(e => console.error('Tally schema init failed:', e.message));
  });
 }
 
@@ -5514,22 +5526,25 @@ app.put('/api/expenses/:id/line-items', (req, res) => {
   const totals = LineItemsValidator.calculateTotals(validation.processedItems);
   
   // Update database with processed line items and calculated totals
-  const sql = `UPDATE expenses SET 
-      line_items = ?, 
-      line_items_count = ?, 
+  // invoice_value is recalculated from line items so the Review card stays in sync
+  const sql = `UPDATE expenses SET
+      line_items = ?,
+      line_items_count = ?,
       has_line_items = ?,
-      taxable_amount = ?, 
+      taxable_amount = ?,
       total_tax_amount = ?,
+      invoice_value = ?,
       table_structure_confidence = ?,
       status = 'pending_review'
       WHERE id = ?`;
-  
+
   const values = [
-      JSON.stringify(validation.processedItems), 
-      validation.processedItems.length, 
+      JSON.stringify(validation.processedItems),
+      validation.processedItems.length,
       validation.processedItems.length > 0,
-      totals.totalTaxable, 
+      totals.totalTaxable,
       totals.totalTax,
+      totals.grandTotal,
       validation.processedItems.length > 0 ? 0.98 : 0, // High confidence for manually edited items
       expenseId
   ];

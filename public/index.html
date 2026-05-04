@@ -152,12 +152,15 @@
                 <button onclick="showTab('analytics')" id="tab-analytics" class="tab-button border-b-2 border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 font-medium">
                     <i data-lucide="trending-up" class="w-4 h-4 inline mr-2"></i>Analytics
                 </button>
+                <button onclick="showTab('tally-setup')" id="tab-tally-setup" class="tab-button border-b-2 border-transparent text-gray-500 hover:text-gray-700 py-4 px-1 font-medium">
+                    <i data-lucide="settings" class="w-4 h-4 inline mr-2"></i>Tally Setup
+                </button>
             </div>
         </div>
     </nav>
 
     <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="w-full mx-auto px-4 sm:px-6 lg:px-10 py-8">
         <!-- Dashboard Tab -->
         <div id="dashboard-tab" class="tab-content active">
             <div class="mb-8">
@@ -804,7 +807,10 @@
                         <h2 class="text-3xl font-bold text-gray-900 mb-2">All Invoices</h2>
                         <p class="text-gray-600">Complete list of processed invoices with voucher type information</p>
                     </div>
-                    <div class="flex space-x-3">
+                    <div class="flex space-x-3 items-center">
+                        <button id="bulk-push-btn" onclick="openBulkPushModal()" class="hidden bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors">
+                            <i data-lucide="send" class="w-4 h-4 inline mr-2"></i>Push Selected to Tally (<span id="bulk-selected-count">0</span>)
+                        </button>
                         <button onclick="exportTallyFormat()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
                             <i data-lucide="download" class="w-4 h-4 inline mr-2"></i>Export Tally
                         </button>
@@ -823,17 +829,17 @@
                     <table class="min-w-full divide-y divide-gray-200" id="invoices-table">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Invoice Details</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tax</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Line Items</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Voucher Type</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-    Actions
-    <span class="block text-xs font-normal text-gray-400 mt-1">🔄 = Reprocessable</span>
-</th>
+                                <th class="px-4 py-3 w-10">
+                                    <input type="checkbox" id="select-all-invoices" onchange="toggleSelectAll(this)" class="w-4 h-4 accent-purple-600">
+                                </th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Invoice Details</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tax</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Line Items</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Voucher Type</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="invoices-body" class="bg-white divide-y divide-gray-200">
@@ -841,6 +847,89 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="invoices-pagination"></div>
+            </div>
+        </div>
+
+        <!-- Tally Setup Tab -->
+        <div id="tally-setup-tab" class="tab-content">
+            <div class="mb-8">
+                <h2 class="text-3xl font-bold text-gray-900 mb-2">Tally Setup</h2>
+                <p class="text-gray-600">One-time configuration to connect and map your Tally data</p>
+            </div>
+
+            <!-- Company selector -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold mb-4 flex items-center"><i data-lucide="building-2" class="w-5 h-5 mr-2 text-blue-600"></i>Company</h3>
+                <div class="flex items-center gap-3">
+                    <select id="tally-company-select" onchange="onTallyCompanyChange()" class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-64">
+                        <option value="">Loading companies…</option>
+                    </select>
+                    <button onclick="showAddCompanyModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">+ Add Company</button>
+                </div>
+            </div>
+
+            <!-- Connection config -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 class="text-lg font-semibold mb-4 flex items-center"><i data-lucide="plug" class="w-5 h-5 mr-2 text-blue-600"></i>Tally Connection</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Tally URL</label>
+                        <input id="ts-tally-url" type="text" value="http://localhost:9000" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="http://localhost:9000">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Tally Company Name</label>
+                        <input id="ts-company-name" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="Exact name as in Tally">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Voucher Numbering</label>
+                        <select id="ts-voucher-numbering" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                            <option value="invoice_number">Use Invoice Number</option>
+                            <option value="tally_auto">Tally Auto-Number</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Round-Off Ledger</label>
+                        <input id="ts-roundoff-ledger" type="text" value="Round Off" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Narration Template</label>
+                    <input id="ts-narration-template" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                        placeholder="Being purchase vide Invoice No. {invoice_number} dated {invoice_date} from {vendor_name}">
+                    <p class="text-xs text-gray-500 mt-1">Variables: {invoice_number} {invoice_date} {vendor_name} {invoice_value}</p>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="testTallyConnection()" class="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm hover:bg-blue-50">Test Connection</button>
+                    <button onclick="saveTallyConfig()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">Save Config</button>
+                    <span id="ts-connection-status" class="text-sm py-2"></span>
+                </div>
+            </div>
+
+            <!-- GST Ledger Mapping -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold flex items-center"><i data-lucide="percent" class="w-5 h-5 mr-2 text-green-600"></i>GST Ledger Mapping</h3>
+                    <button onclick="loadTallyLedgersForGst()" class="text-sm text-blue-600 hover:underline">↻ Refresh from Tally</button>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">Map each GST rate to the correct ledger in your Tally. These are saved once and auto-applied to every push.</p>
+                <div id="ts-gst-map-rows" class="space-y-2 mb-4">
+                    <p class="text-gray-400 text-sm">Load ledgers from Tally to configure.</p>
+                </div>
+                <button onclick="saveGstMap()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">Save GST Mapping</button>
+            </div>
+
+            <!-- RCM Config -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-semibold flex items-center"><i data-lucide="repeat" class="w-5 h-5 mr-2 text-orange-600"></i>RCM Ledger Config</h3>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">Configure Reverse Charge ledgers once. Applied when RCM = Yes on a push.</p>
+                <div id="ts-rcm-rows" class="space-y-2 mb-4">
+                    <p class="text-gray-400 text-sm">Load ledgers from Tally to configure.</p>
+                </div>
+                <button onclick="addRcmRow()" class="border border-orange-500 text-orange-600 px-3 py-1 rounded text-sm mr-2">+ Add Row</button>
+                <button onclick="saveRcmConfig()" class="bg-orange-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-orange-700">Save RCM Config</button>
             </div>
         </div>
 
@@ -2410,6 +2499,10 @@ console.log('📦 Server response:', result);
                                 <button onclick="approveReviewItem(${item.id})" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors">
                                     <i data-lucide="check" class="w-4 h-4 inline mr-1"></i>Approve
                                 </button>
+                                ${item.status === 'approved' ? (item.tally_pushed
+                                    ? `<span class="inline-flex items-center px-3 py-1 rounded text-sm bg-emerald-100 text-emerald-700 font-medium"><i data-lucide="check-circle" class="w-4 h-4 inline mr-1"></i>Pushed to Tally</span>`
+                                    : `<button onclick="openPushModal(${item.id})" class="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700 transition-colors"><i data-lucide="send" class="w-4 h-4 inline mr-1"></i>Push to Tally</button>`
+                                ) : ''}
                             </div>
                         </div>
                     </div>
@@ -2927,77 +3020,102 @@ console.log('📦 Server response:', result);
             }
         }
 
+        // ── Pagination state ──────────────────────────────────────
+        let _allInvoices = [];
+        let _currentPage = 1;
+        let _pageSize = 10;
+
         function displayInvoices(invoices) {
+            _allInvoices = invoices;
+            _currentPage = 1;
+            renderInvoicePage();
+        }
+
+        function renderInvoicePage() {
             const tbody = document.getElementById('invoices-body');
-            
+            const invoices = _allInvoices;
+
             if (invoices.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="8" class="px-6 py-8 text-center text-gray-500">
+                        <td colspan="9" class="px-6 py-8 text-center text-gray-500">
                             No invoices found
                         </td>
                     </tr>
                 `;
+                renderPagination(0);
                 return;
             }
+
+            const total = invoices.length;
+            const totalPages = Math.ceil(total / _pageSize);
+            _currentPage = Math.min(_currentPage, totalPages);
+            const start = (_currentPage - 1) * _pageSize;
+            const pageItems = invoices.slice(start, start + _pageSize);
             
-            tbody.innerHTML = invoices.map(invoice => `
-                <tr class="hover:bg-gray-50">
-                    <td class="px-6 py-4 whitespace-nowrap">
+            tbody.innerHTML = pageItems.map(invoice => `
+                <tr class="hover:bg-gray-50" id="invoice-row-${invoice.id}">
+                    <td class="px-4 py-4 whitespace-nowrap">
+                        ${(invoice.status === 'approved' || invoice.status === 'processed') && !invoice.tally_pushed
+                            ? `<input type="checkbox" class="invoice-checkbox w-4 h-4 accent-purple-600" data-id="${invoice.id}" onchange="onInvoiceCheckboxChange()">`
+                            : ''}
+                    </td>
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <div>
                             <div class="text-sm font-medium text-gray-900">
                                 ${invoice.invoice_number || 'N/A'}
                             </div>
-                            <div class="text-sm text-gray-500">
+                            <div class="text-xs text-gray-500">
                                 ${formatDate(invoice.invoice_date)}
                             </div>
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <div>
                             <div class="text-sm font-medium text-gray-900">
                                 ${invoice.vendor_name || 'Unknown'}
                             </div>
-                            <div class="text-sm text-gray-500">
+                            <div class="text-xs text-gray-500">
                                 ${invoice.vendor_gstn || 'N/A'}
                             </div>
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <div class="text-sm font-medium text-gray-900">
                             ₹${(invoice.invoice_value || 0).toLocaleString()}
                         </div>
-                        <div class="text-sm text-gray-500">
+                        <div class="text-xs text-gray-500">
                             Taxable: ₹${(invoice.taxable_amount || 0).toLocaleString()}
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <div class="text-sm text-gray-900">
-                            ${invoice.igst_amount > 0 ? `IGST: ₹${invoice.igst_amount}` : 
-                              `CGST: ₹${invoice.cgst_amount || 0} + SGST: ₹${invoice.sgst_amount || 0}`}
+                            ${invoice.igst_amount > 0
+                                ? `IGST ₹${(invoice.igst_amount||0).toLocaleString()}`
+                                : `C+S ₹${((invoice.cgst_amount||0)+(invoice.sgst_amount||0)).toLocaleString()}`}
                         </div>
-                        <div class="text-sm text-gray-500">
+                        <div class="text-xs text-gray-500">
                             Total: ₹${(invoice.total_tax_amount || 0).toFixed(2)}
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <div class="flex items-center">
                             <span class="text-sm font-medium text-gray-900">
                                 ${invoice.line_items_count || 0}
                             </span>
-                            <button onclick="viewLineItems(${invoice.id})" 
-                                    class="ml-2 text-blue-600 hover:text-blue-800 text-xs" 
+                            <button onclick="viewLineItems(${invoice.id})"
+                                    class="ml-2 text-blue-600 hover:text-blue-800 text-xs"
                                     title="View ${(invoice.line_items_count > 0) ? 'Line Items' : 'Invoice Details'}">
                                 <i data-lucide="${(invoice.line_items_count > 0) ? 'eye' : 'file-text'}" class="w-3 h-3"></i>
                             </button>
                         </div>
                         ${invoice.table_structure_confidence > 0 ? `
                             <div class="text-xs text-gray-500">
-                                ${Math.round(invoice.table_structure_confidence * 100)}% confidence
+                                ${Math.round(invoice.table_structure_confidence * 100)}%
                             </div>
                         ` : ''}
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getVoucherTypeBadgeClass(invoice.voucher_type)}">
                             ${invoice.voucher_type || 'Purchase'}
                         </span>
@@ -3005,17 +3123,17 @@ console.log('📦 Server response:', result);
                             ${(invoice.entry_type || 'upload').replace('_', ' ')}
                         </div>
                     </td>
-                    <td class="px-6 py-4 whitespace-nowrap">
-    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusBadgeClass(invoice.status)}">
-        ${invoice.status.replace('_', ' ').toUpperCase()}
-    </span>
-    <div class="text-xs text-gray-500 mt-1 processing-source processing-source-${invoice.processing_source || 'unknown'}">
-        <span class="original-text">${invoice.processing_source || 'unknown'}</span>
-        ${invoice.can_reprocess || invoice.parseur_document_id ? 
-            '<span class="ml-1 text-green-600" title="Can be reprocessed">🔄</span>' : ''}
-    </div>
-</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    <td class="px-3 py-3 whitespace-nowrap">
+                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusBadgeClass(invoice.status)}">
+                            ${invoice.status.replace('_', ' ').toUpperCase()}
+                        </span>
+                        <div class="text-xs text-gray-500 mt-1 processing-source processing-source-${invoice.processing_source || 'unknown'}">
+                            <span class="original-text">${invoice.processing_source || 'unknown'}</span>
+                            ${invoice.can_reprocess || invoice.parseur_document_id ?
+                                '<span class="ml-1 text-green-600" title="Can be reprocessed">🔄</span>' : ''}
+                        </div>
+                    </td>
+                    <td class="px-3 py-3 whitespace-nowrap text-right text-sm font-medium">
     <div class="flex space-x-1">
         ${invoice.can_reprocess || invoice.parseur_document_id ? `
             <button onclick="reprocessInvoice(${invoice.id})" 
@@ -3028,16 +3146,82 @@ console.log('📦 Server response:', result);
                 class="text-blue-600 hover:text-blue-900 p-1" title="Edit">
             <i data-lucide="edit" class="w-4 h-4"></i>
         </button>
-        <button onclick="deleteInvoice(${invoice.id})" 
+        <button onclick="deleteInvoice(${invoice.id})"
                 class="text-red-600 hover:text-red-900 p-1" title="Delete">
             <i data-lucide="trash-2" class="w-4 h-4"></i>
         </button>
+        ${invoice.status === 'approved' || invoice.status === 'processed' ? (
+            invoice.tally_pushed
+                ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-700 font-medium ml-1" title="Pushed on ${invoice.tally_pushed_at || ''}">✓ Tally</span>`
+                : `<button onclick="openPushModal(${invoice.id})" class="text-purple-600 hover:text-purple-900 p-1" title="Push to Tally"><i data-lucide="send" class="w-4 h-4"></i></button>`
+        ) : ''}
     </div>
 </td>
                 </tr>
             `).join('');
             
             lucide.createIcons();
+            renderPagination(total);
+        }
+
+        function renderPagination(total) {
+            const container = document.getElementById('invoices-pagination');
+            if (!container) return;
+            if (total === 0) { container.innerHTML = ''; return; }
+
+            const totalPages = Math.ceil(total / _pageSize);
+            const start = (_currentPage - 1) * _pageSize + 1;
+            const end = Math.min(_currentPage * _pageSize, total);
+
+            const pageBtns = [];
+            // Always show first, last, current ±1, with ellipsis gaps
+            const range = new Set([1, totalPages, _currentPage, _currentPage - 1, _currentPage + 1]
+                .filter(p => p >= 1 && p <= totalPages));
+            const sorted = [...range].sort((a, b) => a - b);
+            let prev = 0;
+            for (const p of sorted) {
+                if (p - prev > 1) pageBtns.push('<span class="px-2 py-1 text-gray-400">…</span>');
+                pageBtns.push(`<button onclick="goToPage(${p})"
+                    class="px-3 py-1 rounded text-sm font-medium border transition-colors
+                    ${p === _currentPage
+                        ? 'bg-purple-600 text-white border-purple-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}">${p}</button>`);
+                prev = p;
+            }
+
+            container.innerHTML = `
+                <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 bg-white rounded-b-lg">
+                    <div class="flex items-center gap-3 text-sm text-gray-600">
+                        <span>Show</span>
+                        <select onchange="onPageSizeChange(this.value)"
+                            class="border border-gray-300 rounded px-2 py-1 text-sm">
+                            ${[10,25,50].map(n => `<option value="${n}" ${n===_pageSize?'selected':''}>${n}</option>`).join('')}
+                        </select>
+                        <span>per page &nbsp;·&nbsp; Showing <strong>${start}–${end}</strong> of <strong>${total}</strong> invoices</span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <button onclick="goToPage(${_currentPage - 1})" ${_currentPage===1?'disabled':''}
+                            class="px-3 py-1 rounded text-sm border border-gray-300 bg-white text-gray-700
+                            hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">‹ Prev</button>
+                        ${pageBtns.join('')}
+                        <button onclick="goToPage(${_currentPage + 1})" ${_currentPage===totalPages?'disabled':''}
+                            class="px-3 py-1 rounded text-sm border border-gray-300 bg-white text-gray-700
+                            hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">Next ›</button>
+                    </div>
+                </div>`;
+        }
+
+        function goToPage(page) {
+            const totalPages = Math.ceil(_allInvoices.length / _pageSize);
+            if (page < 1 || page > totalPages) return;
+            _currentPage = page;
+            renderInvoicePage();
+        }
+
+        function onPageSizeChange(val) {
+            _pageSize = parseInt(val, 10);
+            _currentPage = 1;
+            renderInvoicePage();
         }
 
         async function viewLineItems(invoiceId) {
@@ -3716,6 +3900,10 @@ console.log('📦 Server response:', result);
                             <button onclick="approveReviewItem(${item.id})" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors">
                                 <i data-lucide="check" class="w-4 h-4 inline mr-1"></i>Approve
                             </button>
+                            ${item.status === 'approved' ? (item.tally_pushed
+                                ? `<span class="inline-flex items-center px-3 py-1 rounded text-sm bg-emerald-100 text-emerald-700 font-medium"><i data-lucide="check-circle" class="w-4 h-4 inline mr-1"></i>Pushed to Tally</span>`
+                                : `<button onclick="openPushModal(${item.id})" class="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700 transition-colors"><i data-lucide="send" class="w-4 h-4 inline mr-1"></i>Push to Tally</button>`
+                            ) : ''}
                         </div>
                     </div>
                 </div>
@@ -3723,6 +3911,782 @@ console.log('📦 Server response:', result);
             }).join('');
             lucide.createIcons();
         };
+    </script>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         TALLY INTEGRATION — Modals + JavaScript
+    ════════════════════════════════════════════════════════════════ -->
+
+    <!-- Bulk Push Modal -->
+    <div id="bulk-push-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg">
+            <div class="p-6 border-b border-gray-200 flex justify-between items-center">
+                <h3 class="text-lg font-semibold flex items-center gap-2">
+                    <i data-lucide="send" class="w-5 h-5 text-purple-600"></i>
+                    Bulk Push to Tally
+                </h3>
+                <button onclick="closeBulkPushModal()" class="text-gray-400 hover:text-gray-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div id="bulk-invoice-list" class="bg-gray-50 rounded-lg p-3 max-h-40 overflow-y-auto text-sm text-gray-700 space-y-1"></div>
+
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Voucher Type <span class="text-red-500">*</span></label>
+                    <select id="bulk-voucher-type" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                        <option value="Purchase">Purchase</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Applied to all selected invoices</p>
+                </div>
+
+                <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                    <strong>Note:</strong> Invoices with missing ledger mappings will be skipped. Use individual Push to configure mappings for those.
+                </div>
+
+                <!-- Progress -->
+                <div id="bulk-progress-section" class="hidden space-y-2">
+                    <div class="flex justify-between text-sm text-gray-600">
+                        <span id="bulk-progress-label">Pushing…</span>
+                        <span id="bulk-progress-count">0 / 0</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div id="bulk-progress-bar" class="bg-purple-600 h-2 rounded-full transition-all duration-300" style="width:0%"></div>
+                    </div>
+                    <div id="bulk-progress-results" class="max-h-32 overflow-y-auto space-y-1 text-xs"></div>
+                </div>
+            </div>
+            <div class="p-6 border-t border-gray-200 flex justify-end gap-3">
+                <button onclick="closeBulkPushModal()" id="bulk-cancel-btn" class="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+                <button onclick="executeBulkPush()" id="bulk-confirm-btn" class="bg-purple-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-purple-700 flex items-center gap-2">
+                    <i data-lucide="send" class="w-4 h-4"></i>Push All
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Company Modal -->
+    <div id="add-company-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
+            <h3 class="text-lg font-semibold mb-4">Add Company</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Company Name <span class="text-red-500">*</span></label>
+                    <input id="new-company-name" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. Topaz International">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">GSTIN</label>
+                    <input id="new-company-gstin" type="text" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="27XXXXX...">
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 mt-5">
+                <button onclick="document.getElementById('add-company-modal').classList.add('hidden')" class="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+                <button onclick="saveNewCompany()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Push to Tally Modal -->
+    <div id="push-tally-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div class="p-6 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
+                <h3 class="text-lg font-semibold flex items-center gap-2">
+                    <i data-lucide="send" class="w-5 h-5 text-purple-600"></i>
+                    Push to Tally
+                </h3>
+                <button onclick="closePushModal()" class="text-gray-400 hover:text-gray-600">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-5">
+                <!-- Invoice summary -->
+                <div id="push-invoice-summary" class="bg-gray-50 rounded-lg p-4 text-sm text-gray-700"></div>
+
+                <!-- RCM toggle -->
+                <div class="flex items-center gap-3 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                    <input type="checkbox" id="push-is-rcm" class="w-4 h-4 accent-orange-500">
+                    <label for="push-is-rcm" class="text-sm font-medium text-orange-800">Reverse Charge (RCM) applicable for this invoice</label>
+                </div>
+
+                <!-- Voucher type -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Voucher Type <span class="text-red-500">*</span></label>
+                    <select id="push-voucher-type" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                        <option value="">Loading from Tally…</option>
+                    </select>
+                </div>
+
+                <!-- Vendor ledger -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Vendor Ledger <span class="text-red-500">*</span></label>
+                    <div class="flex gap-2">
+                        <select id="push-vendor-ledger" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                            <option value="">Select vendor ledger…</option>
+                        </select>
+                        <button onclick="toggleCreateVendor()" id="create-vendor-btn" class="border border-blue-500 text-blue-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 whitespace-nowrap">+ Create New</button>
+                    </div>
+                    <!-- New vendor form -->
+                    <div id="create-vendor-form" class="hidden mt-3 p-3 bg-blue-50 rounded-lg space-y-2">
+                        <p class="text-xs text-blue-700 font-medium">New vendor will be created in Tally</p>
+                        <div class="flex gap-2">
+                            <div class="flex-1">
+                                <label class="block text-xs text-gray-600 mb-1">Ledger Name</label>
+                                <input id="new-vendor-ledger-name" type="text" class="w-full border border-gray-300 rounded px-2 py-1 text-sm" placeholder="Vendor name in Tally">
+                            </div>
+                            <div class="flex-1">
+                                <label class="block text-xs text-gray-600 mb-1">Under Group</label>
+                                <select id="new-vendor-group" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                                    <option value="Sundry Creditors">Sundry Creditors</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Purchase ledger overrides (per rate) -->
+                <div id="push-purchase-ledgers-section">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Purchase / Expense Ledger</label>
+                    <div id="push-purchase-ledger-rows" class="space-y-2"></div>
+                </div>
+
+                <!-- Due date -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
+                    <input type="date" id="push-due-date" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                    <p class="text-xs text-gray-500 mt-1">Used for outstanding payment tracking in Tally</p>
+                </div>
+
+                <!-- Narration -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Narration</label>
+                    <textarea id="push-narration" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none"></textarea>
+                </div>
+
+                <!-- Error / status -->
+                <div id="push-status" class="hidden"></div>
+            </div>
+
+            <div class="p-6 border-t border-gray-200 flex justify-end gap-3 sticky bottom-0 bg-white">
+                <button onclick="closePushModal()" class="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
+                <button onclick="confirmPush()" id="push-confirm-btn" class="bg-purple-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-purple-700 flex items-center gap-2">
+                    <i data-lucide="send" class="w-4 h-4"></i>Push to Tally
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ═══════════════════════════════════════════════════════════════
+    // TALLY INTEGRATION STATE
+    // ═══════════════════════════════════════════════════════════════
+    let tallyState = {
+        companyId: 1,
+        ledgers: [],
+        groups: [],
+        voucherTypes: [],
+        stockItems: [],
+        gstMap: [],
+        currentExpenseId: null,
+        preflight: null
+    };
+
+    // ═══════════════════════════════════════════════════════════════
+    // COMPANY MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════
+    async function loadCompanies() {
+        try {
+            const res = await fetch('/api/companies');
+            const companies = await res.json();
+            const sel = document.getElementById('tally-company-select');
+            if (!sel) return;
+            sel.innerHTML = companies.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            if (companies.length) {
+                tallyState.companyId = companies[0].id;
+                onTallyCompanyChange();
+            }
+        } catch (e) { console.error('loadCompanies:', e); }
+    }
+
+    function showAddCompanyModal() {
+        document.getElementById('add-company-modal').classList.remove('hidden');
+        document.getElementById('new-company-name').focus();
+    }
+
+    async function saveNewCompany() {
+        const name = document.getElementById('new-company-name').value.trim();
+        const gstin = document.getElementById('new-company-gstin').value.trim();
+        if (!name) return alert('Company name is required');
+        try {
+            await fetch('/api/companies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, gstin }) });
+            document.getElementById('add-company-modal').classList.add('hidden');
+            document.getElementById('new-company-name').value = '';
+            document.getElementById('new-company-gstin').value = '';
+            loadCompanies();
+        } catch (e) { alert('Failed to save company: ' + e.message); }
+    }
+
+    async function onTallyCompanyChange() {
+        const sel = document.getElementById('tally-company-select');
+        if (sel) tallyState.companyId = parseInt(sel.value) || 1;
+        await loadTallyConfig();
+        await loadGstMap();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // TALLY CONFIG
+    // ═══════════════════════════════════════════════════════════════
+    async function loadTallyConfig() {
+        try {
+            const res = await fetch(`/api/tally/config/${tallyState.companyId}`);
+            const cfg = await res.json();
+            if (cfg && cfg.tally_url) {
+                document.getElementById('ts-tally-url').value = cfg.tally_url || 'http://localhost:9000';
+                document.getElementById('ts-company-name').value = cfg.tally_company_name || '';
+                document.getElementById('ts-voucher-numbering').value = cfg.voucher_numbering || 'invoice_number';
+                document.getElementById('ts-roundoff-ledger').value = cfg.roundoff_ledger || 'Round Off';
+                document.getElementById('ts-narration-template').value = cfg.narration_template || '';
+            }
+        } catch (e) { console.error('loadTallyConfig:', e); }
+    }
+
+    async function saveTallyConfig() {
+        const body = {
+            company_id: tallyState.companyId,
+            tally_url: document.getElementById('ts-tally-url').value.trim(),
+            tally_company_name: document.getElementById('ts-company-name').value.trim(),
+            narration_template: document.getElementById('ts-narration-template').value.trim(),
+            voucher_numbering: document.getElementById('ts-voucher-numbering').value,
+            roundoff_ledger: document.getElementById('ts-roundoff-ledger').value.trim()
+        };
+        try {
+            await fetch('/api/tally/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            showNotification('Saved', 'Tally config saved', 'success');
+        } catch (e) { showNotification('Error', e.message, 'error'); }
+    }
+
+    async function testTallyConnection() {
+        const statusEl = document.getElementById('ts-connection-status');
+        statusEl.textContent = 'Testing…';
+        statusEl.className = 'text-sm py-2 text-gray-500';
+        try {
+            const res = await fetch(`/api/tally/test-connection?company_id=${tallyState.companyId}`);
+            const data = await res.json();
+            if (data.connected) {
+                statusEl.textContent = '✅ Connected to Tally';
+                statusEl.className = 'text-sm py-2 text-green-600 font-medium';
+            } else {
+                statusEl.textContent = '❌ Cannot connect — is Tally open?';
+                statusEl.className = 'text-sm py-2 text-red-600 font-medium';
+            }
+        } catch (e) {
+            statusEl.textContent = '❌ Error: ' + e.message;
+            statusEl.className = 'text-sm py-2 text-red-600';
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // GST MAP
+    // ═══════════════════════════════════════════════════════════════
+    const GST_TYPES = [
+        { type: 'igst', rates: [5, 12, 18, 28] },
+        { type: 'cgst', rates: [2.5, 6, 9, 14] },
+        { type: 'sgst', rates: [2.5, 6, 9, 14] },
+        { type: 'cess', rates: [1, 5] }
+    ];
+
+    async function loadGstMap() {
+        try {
+            const res = await fetch(`/api/tally/gst-map/${tallyState.companyId}`);
+            tallyState.gstMap = await res.json();
+            renderGstMapRows(tallyState.ledgers);
+        } catch (e) { console.error('loadGstMap:', e); }
+    }
+
+    async function loadTallyLedgersForGst() {
+        try {
+            document.getElementById('ts-gst-map-rows').innerHTML = '<p class="text-gray-400 text-sm">Fetching ledgers from Tally…</p>';
+            const res = await fetch(`/api/tally/ledgers?company_id=${tallyState.companyId}`);
+            const data = await res.json();
+            tallyState.ledgers = data.ledgers || [];
+            renderGstMapRows(tallyState.ledgers);
+        } catch (e) {
+            document.getElementById('ts-gst-map-rows').innerHTML = `<p class="text-red-500 text-sm">Error: ${e.message}. Is Tally running?</p>`;
+        }
+    }
+
+    function renderGstMapRows(ledgers) {
+        const container = document.getElementById('ts-gst-map-rows');
+        const ledgerOpts = ledgers.map(l => `<option value="${l.name}">${l.name}</option>`).join('');
+        const rows = GST_TYPES.flatMap(gt =>
+            gt.rates.map(rate => {
+                const saved = (tallyState.gstMap || []).find(m => m.tax_type === gt.type && Math.abs(m.tax_rate - rate) < 0.01);
+                return `<div class="flex items-center gap-3">
+                    <span class="w-28 text-sm text-gray-600 font-mono">${gt.type.toUpperCase()} @ ${rate}%</span>
+                    <select data-gst-type="${gt.type}" data-gst-rate="${rate}" class="gst-map-select flex-1 border border-gray-300 rounded px-2 py-1 text-sm">
+                        <option value="">— Not mapped —</option>
+                        ${ledgerOpts}
+                    </select>
+                </div>`;
+            })
+        ).join('');
+        container.innerHTML = rows || '<p class="text-gray-400 text-sm">No rows. Click Refresh from Tally first.</p>';
+        // Restore saved values
+        container.querySelectorAll('.gst-map-select').forEach(sel => {
+            const saved = (tallyState.gstMap || []).find(m => m.tax_type === sel.dataset.gstType && Math.abs(m.tax_rate - parseFloat(sel.dataset.gstRate)) < 0.01);
+            if (saved) sel.value = saved.ledger_name;
+        });
+    }
+
+    async function saveGstMap() {
+        const mappings = [];
+        document.querySelectorAll('.gst-map-select').forEach(sel => {
+            if (sel.value) mappings.push({ tax_type: sel.dataset.gstType, tax_rate: parseFloat(sel.dataset.gstRate), ledger_name: sel.value });
+        });
+        try {
+            await fetch('/api/tally/gst-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_id: tallyState.companyId, mappings }) });
+            tallyState.gstMap = mappings;
+            showNotification('Saved', 'GST ledger mapping saved', 'success');
+        } catch (e) { showNotification('Error', e.message, 'error'); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // RCM CONFIG
+    // ═══════════════════════════════════════════════════════════════
+    function addRcmRow(data = {}) {
+        const container = document.getElementById('ts-rcm-rows');
+        const ledgerOpts = tallyState.ledgers.map(l => `<option value="${l.name}">${l.name}</option>`).join('');
+        const id = Date.now();
+        const div = document.createElement('div');
+        div.className = 'rcm-row flex items-center gap-2';
+        div.innerHTML = `
+            <select class="rcm-tax-type border border-gray-300 rounded px-2 py-1 text-sm w-20">
+                <option value="igst" ${data.tax_type==='igst'?'selected':''}>IGST</option>
+                <option value="cgst" ${data.tax_type==='cgst'?'selected':''}>CGST</option>
+                <option value="sgst" ${data.tax_type==='sgst'?'selected':''}>SGST</option>
+            </select>
+            <input type="number" class="rcm-tax-rate border border-gray-300 rounded px-2 py-1 text-sm w-16" placeholder="Rate" value="${data.tax_rate||''}">
+            <select class="rcm-liability flex-1 border border-gray-300 rounded px-2 py-1 text-sm">
+                <option value="">Liability ledger…</option>${ledgerOpts}
+            </select>
+            <select class="rcm-input flex-1 border border-gray-300 rounded px-2 py-1 text-sm">
+                <option value="">Input credit ledger…</option>${ledgerOpts}
+            </select>
+            <button onclick="this.parentElement.remove()" class="text-red-400 hover:text-red-600 text-lg leading-none">×</button>`;
+        if (data.liability_ledger) div.querySelector('.rcm-liability').value = data.liability_ledger;
+        if (data.input_credit_ledger) div.querySelector('.rcm-input').value = data.input_credit_ledger;
+        container.appendChild(div);
+    }
+
+    async function loadRcmConfig() {
+        try {
+            const res = await fetch(`/api/tally/rcm-config/${tallyState.companyId}`);
+            const rows = await res.json();
+            const container = document.getElementById('ts-rcm-rows');
+            container.innerHTML = '';
+            rows.forEach(r => addRcmRow(r));
+        } catch (e) { console.error('loadRcmConfig:', e); }
+    }
+
+    async function saveRcmConfig() {
+        const mappings = [];
+        document.querySelectorAll('.rcm-row').forEach(row => {
+            const type = row.querySelector('.rcm-tax-type').value;
+            const rate = parseFloat(row.querySelector('.rcm-tax-rate').value);
+            const liability = row.querySelector('.rcm-liability').value;
+            const input = row.querySelector('.rcm-input').value;
+            if (type && rate && liability && input) mappings.push({ tax_type: type, tax_rate: rate, liability_ledger: liability, input_credit_ledger: input });
+        });
+        try {
+            await fetch('/api/tally/rcm-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ company_id: tallyState.companyId, mappings }) });
+            showNotification('Saved', 'RCM config saved', 'success');
+        } catch (e) { showNotification('Error', e.message, 'error'); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PUSH MODAL
+    // ═══════════════════════════════════════════════════════════════
+    async function openPushModal(expenseId) {
+        tallyState.currentExpenseId = expenseId;
+        document.getElementById('push-tally-modal').classList.remove('hidden');
+        document.getElementById('push-status').classList.add('hidden');
+        document.getElementById('push-confirm-btn').disabled = false;
+        document.getElementById('push-invoice-summary').innerHTML = 'Loading…';
+        document.getElementById('push-narration').value = '';
+        document.getElementById('push-due-date').value = '';
+        document.getElementById('push-is-rcm').checked = false;
+        document.getElementById('create-vendor-form').classList.add('hidden');
+        lucide.createIcons();
+
+        try {
+            // Preflight check
+            const pfRes = await fetch(`/api/expenses/${expenseId}/tally-preflight?company_id=${tallyState.companyId}`);
+            tallyState.preflight = await pfRes.json();
+            const pf = tallyState.preflight;
+
+            if (pf.already_pushed) {
+                showPushStatus('error', `This invoice was already pushed to Tally on ${new Date(pf.pushed_at).toLocaleString()}.`);
+                document.getElementById('push-confirm-btn').disabled = true;
+                return;
+            }
+
+            // Invoice summary
+            document.getElementById('push-invoice-summary').innerHTML = `
+                <div class="grid grid-cols-2 gap-2">
+                    <div><span class="text-gray-500">Invoice #</span> <span class="font-medium">${pf.invoice_id}</span></div>
+                    <div><span class="text-gray-500">Vendor</span> <span class="font-medium">${pf.vendor?.name || '—'}</span></div>
+                    <div><span class="text-gray-500">GSTIN</span> <span class="font-medium">${pf.vendor?.gstin || '—'}</span></div>
+                    <div><span class="text-gray-500">GST Type</span> <span class="font-medium uppercase">${pf.gst_type}</span></div>
+                </div>
+                ${pf.rcm_detected ? '<p class="mt-2 text-orange-600 text-xs font-medium">⚠ RCM detected in invoice text — verify below</p>' : ''}`;
+
+            if (pf.rcm_detected) document.getElementById('push-is-rcm').checked = true;
+
+            // Load live data from Tally
+            const [vtRes, ldRes, grpRes] = await Promise.all([
+                fetch(`/api/tally/voucher-types?company_id=${tallyState.companyId}`),
+                fetch(`/api/tally/ledgers?company_id=${tallyState.companyId}`),
+                fetch(`/api/tally/groups?company_id=${tallyState.companyId}`)
+            ]);
+            const vtData = await vtRes.json();
+            const ldData = await ldRes.json();
+            const grpData = await grpRes.json();
+            tallyState.voucherTypes = vtData.voucher_types || [];
+            tallyState.ledgers = ldData.ledgers || [];
+            tallyState.groups = grpData.groups || [];
+
+            // Voucher type dropdown
+            const vtSel = document.getElementById('push-voucher-type');
+            vtSel.innerHTML = tallyState.voucherTypes.map(t => `<option value="${t}">${t}</option>`).join('');
+            vtSel.value = 'Purchase';
+
+            // Vendor ledger dropdown
+            const vdSel = document.getElementById('push-vendor-ledger');
+            const ledgerOpts = tallyState.ledgers.map(l => `<option value="${l.name}">${l.name}</option>`).join('');
+            vdSel.innerHTML = '<option value="">— Select vendor ledger —</option>' + ledgerOpts;
+            if (pf.vendor?.mapped_ledger) vdSel.value = pf.vendor.mapped_ledger;
+
+            // Groups for new vendor
+            const grpSel = document.getElementById('new-vendor-group');
+            grpSel.innerHTML = tallyState.groups.map(g => `<option value="${g}">${g}</option>`).join('');
+            grpSel.value = 'Sundry Creditors';
+
+            if (pf.vendor?.name) document.getElementById('new-vendor-ledger-name').value = pf.vendor.name;
+
+            // Purchase ledger rows (one per missing rate)
+            const plContainer = document.getElementById('push-purchase-ledger-rows');
+            plContainer.innerHTML = '';
+
+            // Load saved purchase map for pre-fill
+            const pmRes = await fetch(`/api/tally/purchase-map/${tallyState.companyId}`);
+            const purchaseMap = await pmRes.json();
+
+            (pf.rates || [0]).forEach(rate => {
+                const saved = purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate !== null && Math.abs(p.tax_rate - rate) < 0.01)
+                           || purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate === null);
+                const isMissing = (pf.missing_purchase_ledgers || []).includes(rate);
+                plContainer.innerHTML += `
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm text-gray-600 w-32 font-mono">${pf.gst_type.toUpperCase()} @ ${rate}%</span>
+                        <select data-rate="${rate}" data-gsttype="${pf.gst_type}" class="purchase-ledger-sel flex-1 border ${isMissing ? 'border-red-400 bg-red-50' : 'border-gray-300'} rounded px-2 py-1 text-sm">
+                            <option value="">— Select purchase/expense ledger —</option>
+                            ${ledgerOpts}
+                        </select>
+                        ${isMissing ? '<span class="text-red-500 text-xs">Required</span>' : ''}
+                    </div>`;
+            });
+            // Pre-fill saved values
+            document.querySelectorAll('.purchase-ledger-sel').forEach(sel => {
+                const saved = purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate !== null && Math.abs(p.tax_rate - parseFloat(sel.dataset.rate)) < 0.01)
+                           || purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate === null);
+                if (saved) sel.value = saved.ledger_name;
+            });
+
+            // Default narration from config template
+            const cfgRes = await fetch(`/api/tally/config/${tallyState.companyId}`);
+            const cfg = await cfgRes.json();
+            if (cfg && cfg.narration_template) {
+                document.getElementById('push-narration').value = cfg.narration_template
+                    .replace('{invoice_number}', pf.invoice_id)
+                    .replace('{vendor_name}', pf.vendor?.name || '')
+                    .replace('{invoice_date}', '')
+                    .replace('{invoice_value}', '');
+            }
+
+            lucide.createIcons();
+        } catch (e) {
+            showPushStatus('error', 'Failed to load push data: ' + e.message);
+        }
+    }
+
+    function closePushModal() {
+        document.getElementById('push-tally-modal').classList.add('hidden');
+        tallyState.currentExpenseId = null;
+        tallyState.preflight = null;
+    }
+
+    function toggleCreateVendor() {
+        const form = document.getElementById('create-vendor-form');
+        form.classList.toggle('hidden');
+    }
+
+    function showPushStatus(type, msg) {
+        const el = document.getElementById('push-status');
+        el.classList.remove('hidden');
+        el.className = type === 'error'
+            ? 'p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700'
+            : 'p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700';
+        el.textContent = msg;
+    }
+
+    async function confirmPush() {
+        const btn = document.getElementById('push-confirm-btn');
+        const pf = tallyState.preflight;
+        if (!pf) return;
+
+        // Collect purchase ledger overrides + save them
+        const purchaseLedgerOverrides = {};
+        const purchaseMappingsToSave = [];
+        let missingRequired = false;
+
+        document.querySelectorAll('.purchase-ledger-sel').forEach(sel => {
+            const rate = parseFloat(sel.dataset.rate);
+            const gstType = sel.dataset.gsttype;
+            const key = `${gstType}_${rate}`;
+            if (sel.value) {
+                purchaseLedgerOverrides[key] = sel.value;
+                purchaseMappingsToSave.push({ company_id: tallyState.companyId, gst_type: gstType, tax_rate: rate, ledger_name: sel.value });
+            } else if ((pf.missing_purchase_ledgers || []).includes(rate)) {
+                missingRequired = true;
+            }
+        });
+
+        if (missingRequired) { showPushStatus('error', 'Please select a purchase/expense ledger for all required rates.'); return; }
+
+        const vendorLedger = document.getElementById('push-vendor-ledger').value;
+        const createVendor = !document.getElementById('create-vendor-form').classList.contains('hidden');
+        const newVendorName = document.getElementById('new-vendor-ledger-name').value.trim();
+        const newVendorGroup = document.getElementById('new-vendor-group').value;
+        const finalVendorLedger = createVendor && newVendorName ? newVendorName : vendorLedger;
+
+        if (!finalVendorLedger) { showPushStatus('error', 'Please select or create a vendor ledger.'); return; }
+
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 animate-spin inline mr-1"></i>Pushing…';
+        lucide.createIcons();
+
+        // Save purchase mappings for future
+        for (const m of purchaseMappingsToSave) {
+            await fetch('/api/tally/purchase-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(m) }).catch(() => {});
+        }
+
+        const body = {
+            company_id: tallyState.companyId,
+            voucher_type: document.getElementById('push-voucher-type').value,
+            narration: document.getElementById('push-narration').value,
+            due_date: document.getElementById('push-due-date').value || null,
+            is_rcm: document.getElementById('push-is-rcm').checked,
+            vendor_ledger_name: finalVendorLedger,
+            vendor_group: newVendorGroup,
+            create_vendor: createVendor && !!newVendorName,
+            purchase_ledger_overrides: purchaseLedgerOverrides
+        };
+
+        try {
+            const res = await fetch(`/api/expenses/${tallyState.currentExpenseId}/push-to-tally`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                showPushStatus('error', data.error || 'Push failed');
+                btn.disabled = false;
+                btn.innerHTML = '<i data-lucide="send" class="w-4 h-4 inline mr-1"></i>Push to Tally';
+                lucide.createIcons();
+                return;
+            }
+
+            showPushStatus('success', `✅ Voucher pushed to Tally successfully! (${data.voucher_type} #${data.voucher_number || ''})`);
+            btn.innerHTML = '✅ Pushed';
+            setTimeout(() => {
+                closePushModal();
+                // Refresh the current view
+                if (typeof loadReviewItems === 'function') loadReviewItems();
+                if (typeof loadInvoices === 'function') loadInvoices();
+            }, 1500);
+        } catch (e) {
+            showPushStatus('error', e.message.includes('fetch') ? 'Network error — is the server running?' : e.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i data-lucide="send" class="w-4 h-4 inline mr-1"></i>Push to Tally';
+            lucide.createIcons();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // BULK SELECTION + BULK PUSH
+    // ═══════════════════════════════════════════════════════════════
+
+    function getSelectedInvoiceIds() {
+        return [...document.querySelectorAll('.invoice-checkbox:checked')].map(cb => parseInt(cb.dataset.id));
+    }
+
+    function onInvoiceCheckboxChange() {
+        const ids = getSelectedInvoiceIds();
+        const btn = document.getElementById('bulk-push-btn');
+        const countEl = document.getElementById('bulk-selected-count');
+        countEl.textContent = ids.length;
+        btn.classList.toggle('hidden', ids.length === 0);
+
+        // Update select-all state
+        const all = document.querySelectorAll('.invoice-checkbox');
+        const selectAll = document.getElementById('select-all-invoices');
+        if (selectAll) {
+            selectAll.indeterminate = ids.length > 0 && ids.length < all.length;
+            selectAll.checked = ids.length === all.length && all.length > 0;
+        }
+    }
+
+    function toggleSelectAll(checkbox) {
+        document.querySelectorAll('.invoice-checkbox').forEach(cb => cb.checked = checkbox.checked);
+        onInvoiceCheckboxChange();
+    }
+
+    async function openBulkPushModal() {
+        const ids = getSelectedInvoiceIds();
+        if (!ids.length) return;
+
+        // Reset modal state
+        document.getElementById('bulk-progress-section').classList.add('hidden');
+        document.getElementById('bulk-progress-results').innerHTML = '';
+        document.getElementById('bulk-confirm-btn').disabled = false;
+        document.getElementById('bulk-confirm-btn').innerHTML = '<i data-lucide="send" class="w-4 h-4 inline mr-1"></i>Push All';
+        document.getElementById('bulk-cancel-btn').textContent = 'Cancel';
+
+        // Show selected invoice list
+        const rows = ids.map(id => {
+            const row = document.getElementById(`invoice-row-${id}`);
+            const invNum = row ? row.querySelector('td:nth-child(2) .text-sm.font-medium')?.textContent?.trim() : `Invoice #${id}`;
+            const vendor = row ? row.querySelector('td:nth-child(3) .text-sm.font-medium')?.textContent?.trim() : '';
+            return `<div class="flex justify-between"><span class="font-medium">${invNum}</span><span class="text-gray-500">${vendor}</span></div>`;
+        }).join('');
+        document.getElementById('bulk-invoice-list').innerHTML = `<p class="text-xs text-gray-500 mb-2 font-medium">${ids.length} invoice(s) selected:</p>${rows}`;
+
+        // Load voucher types
+        try {
+            const res = await fetch(`/api/tally/voucher-types?company_id=${tallyState.companyId}`);
+            const data = await res.json();
+            const sel = document.getElementById('bulk-voucher-type');
+            sel.innerHTML = (data.voucher_types || ['Purchase', 'Sales', 'Journal']).map(t => `<option value="${t}">${t}</option>`).join('');
+            sel.value = 'Purchase';
+        } catch (e) {}
+
+        document.getElementById('bulk-push-modal').classList.remove('hidden');
+        lucide.createIcons();
+    }
+
+    function closeBulkPushModal() {
+        document.getElementById('bulk-push-modal').classList.add('hidden');
+    }
+
+    async function executeBulkPush() {
+        const ids = getSelectedInvoiceIds();
+        if (!ids.length) return;
+
+        const voucherType = document.getElementById('bulk-voucher-type').value;
+        const confirmBtn = document.getElementById('bulk-confirm-btn');
+        const cancelBtn = document.getElementById('bulk-cancel-btn');
+        const progressSection = document.getElementById('bulk-progress-section');
+        const progressBar = document.getElementById('bulk-progress-bar');
+        const progressLabel = document.getElementById('bulk-progress-label');
+        const progressCount = document.getElementById('bulk-progress-count');
+        const resultsEl = document.getElementById('bulk-progress-results');
+
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = 'Pushing…';
+        cancelBtn.textContent = 'Close';
+        progressSection.classList.remove('hidden');
+        resultsEl.innerHTML = '';
+        lucide.createIcons();
+
+        let done = 0, succeeded = 0, failed = 0, skipped = 0;
+
+        for (const id of ids) {
+            progressCount.textContent = `${done} / ${ids.length}`;
+            progressBar.style.width = `${Math.round((done / ids.length) * 100)}%`;
+            progressLabel.textContent = `Pushing invoice ${id}…`;
+
+            try {
+                // Run preflight to check for missing mappings
+                const pf = await fetch(`/api/expenses/${id}/tally-preflight?company_id=${tallyState.companyId}`).then(r => r.json());
+
+                if (pf.already_pushed) {
+                    skipped++;
+                    resultsEl.innerHTML += `<div class="text-gray-500">⏭ Invoice ${id} — already pushed, skipped</div>`;
+                    done++;
+                    continue;
+                }
+
+                if (pf.missing_purchase_ledgers?.length > 0) {
+                    skipped++;
+                    resultsEl.innerHTML += `<div class="text-amber-600">⚠ Invoice ${id} — missing ledger mapping, skipped</div>`;
+                    done++;
+                    continue;
+                }
+
+                const res = await fetch(`/api/expenses/${id}/push-to-tally`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        company_id: tallyState.companyId,
+                        voucher_type: voucherType
+                    })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    succeeded++;
+                    resultsEl.innerHTML += `<div class="text-green-600">✅ Invoice ${id} — pushed (${data.voucher_type})</div>`;
+                    // Update row UI
+                    const cb = document.querySelector(`.invoice-checkbox[data-id="${id}"]`);
+                    if (cb) cb.closest('td').innerHTML = '';
+                    const sendBtn = document.querySelector(`button[onclick="openPushModal(${id})"]`);
+                    if (sendBtn) sendBtn.outerHTML = `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-700 font-medium ml-1">✓ Tally</span>`;
+                } else {
+                    failed++;
+                    resultsEl.innerHTML += `<div class="text-red-600">❌ Invoice ${id} — ${data.error || 'failed'}</div>`;
+                }
+            } catch (e) {
+                failed++;
+                resultsEl.innerHTML += `<div class="text-red-600">❌ Invoice ${id} — ${e.message}</div>`;
+            }
+
+            done++;
+            resultsEl.scrollTop = resultsEl.scrollHeight;
+        }
+
+        progressCount.textContent = `${done} / ${ids.length}`;
+        progressBar.style.width = '100%';
+        progressLabel.textContent = `Done — ${succeeded} pushed, ${skipped} skipped, ${failed} failed`;
+
+        // Deselect all and hide bulk button
+        document.querySelectorAll('.invoice-checkbox').forEach(cb => cb.checked = false);
+        onInvoiceCheckboxChange();
+
+        confirmBtn.innerHTML = '✅ Done';
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // INIT on Tally Setup tab open
+    // ═══════════════════════════════════════════════════════════════
+    const _origShowTab = showTab;
+    showTab = function(tabName) {
+        _origShowTab(tabName);
+        if (tabName === 'tally-setup') {
+            loadCompanies();
+        }
+    };
     </script>
 </body>
 </html>
