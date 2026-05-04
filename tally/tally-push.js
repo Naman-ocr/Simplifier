@@ -71,8 +71,10 @@ function parseTallyResponse(xmlStr) {
     const created = parseInt((xmlStr.match(/<CREATED>(\d+)<\/CREATED>/) || [])[1] || 0);
     const altered = parseInt((xmlStr.match(/<ALTERED>(\d+)<\/ALTERED>/) || [])[1] || 0);
     const exceptions = parseInt((xmlStr.match(/<EXCEPTIONS>(\d+)<\/EXCEPTIONS>/) || [])[1] || 0);
-    const errorMsg = (xmlStr.match(/<LINEERROR>(.*?)<\/LINEERROR>/) || [])[1] || '';
-    return { created, altered, exceptions, errorMsg };
+    const errorMsg = (xmlStr.match(/<LINEERROR>(.*?)<\/LINEERROR>/i) || [])[1] || '';
+    // Tally sometimes returns <RESPONSE><LINEERROR>...</LINEERROR></RESPONSE> with no CREATED tag
+    const failed = created === 0 && altered === 0 && errorMsg !== '';
+    return { created, altered, exceptions, errorMsg, failed };
 }
 
 // ─── vendor auto-create XML ───────────────────────────────────────────────────
@@ -107,19 +109,28 @@ function buildVoucherXml(companyName, voucherData) {
         vendor_ledger, ledger_lines
     } = voucherData;
 
+    // Tally sign convention:
+    //   DR entries (purchase, gst input)  → ISDEEMEDPOSITIVE=Yes,  AMOUNT = negative
+    //   CR entries (vendor/party credit)  → ISDEEMEDPOSITIVE=No,   AMOUNT = positive
+    // Our internal convention: positive amounts = DR, negative amounts = CR
     const allLedgers = ledger_lines
-        .map(l => `
+        .map(l => {
+            const isDR = l.amount >= 0;
+            const tallyAmt = round2(-l.amount); // flip: our +DR → Tally negative, our -CR → Tally positive
+            const billingAmt = round2(-l.amount);
+            return `
     <ALLLEDGERENTRIES.LIST>
         <LEDGERNAME>${escapeXml(l.ledger)}</LEDGERNAME>
-        <ISDEEMEDPOSITIVE>${l.amount < 0 ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE>
-        <AMOUNT>${round2(l.amount)}</AMOUNT>
+        <ISDEEMEDPOSITIVE>${isDR ? 'Yes' : 'No'}</ISDEEMEDPOSITIVE>
+        <AMOUNT>${tallyAmt}</AMOUNT>
         ${l.bill_ref ? `<BILLALLOCATIONS.LIST>
             <NAME>${escapeXml(l.bill_ref)}</NAME>
             <BILLTYPE>New Ref</BILLTYPE>
-            <AMOUNT>${round2(l.amount)}</AMOUNT>
+            <AMOUNT>${billingAmt}</AMOUNT>
             ${due_date ? `<DUEDATE>${tallyDate(due_date)}</DUEDATE>` : ''}
         </BILLALLOCATIONS.LIST>` : ''}
-    </ALLLEDGERENTRIES.LIST>`).join('');
+    </ALLLEDGERENTRIES.LIST>`;
+        }).join('');
 
     return `<ENVELOPE>
 <HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>
@@ -135,7 +146,7 @@ function buildVoucherXml(companyName, voucherData) {
 <PARTYLEDGERNAME>${escapeXml(vendor_ledger)}</PARTYLEDGERNAME>
 <NARRATION>${escapeXml(narration)}</NARRATION>
 <ISOPTIONAL>No</ISOPTIONAL>
-<ISINVOICE>Yes</ISINVOICE>
+<ISINVOICE>${['Purchase', 'Sales', 'Purchase Invoice', 'Sales Invoice'].includes(voucher_type) ? 'Yes' : 'No'}</ISINVOICE>
 ${is_rcm ? '<ISRCMAPPLICABLE>Yes</ISRCMAPPLICABLE>' : ''}
 ${allLedgers}
 </VOUCHER>
@@ -341,10 +352,13 @@ router.post('/expenses/:id/push-to-tally', async (req, res) => {
         };
 
         const voucherXml = buildVoucherXml(companyName, voucherData);
+        console.log('📤 Tally XML sent:\n', voucherXml);
         const tallyResponse = await postToTally(tallyUrl, voucherXml);
+        console.log('📥 Tally response:\n', tallyResponse);
         const result = parseTallyResponse(tallyResponse);
+        console.log('📊 Parsed result:', result);
 
-        if (result.exceptions > 0 && result.created === 0) {
+        if (result.failed || (result.exceptions > 0 && result.created === 0)) {
             return res.status(400).json({
                 error: `Tally rejected the voucher: ${result.errorMsg || 'Check Tally for details'}`,
                 tally_response: tallyResponse
@@ -369,6 +383,9 @@ router.post('/expenses/:id/push-to-tally', async (req, res) => {
         res.json({
             success: true,
             created: result.created,
+            altered: result.altered,
+            exceptions: result.exceptions,
+            tally_message: result.errorMsg || null,
             voucher_type: voucherData.voucher_type,
             voucher_number: voucherNumber,
             pushed_at: new Date().toISOString()
