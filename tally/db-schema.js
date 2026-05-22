@@ -23,6 +23,7 @@ function initTallySchema(db) {
             narration_template TEXT DEFAULT "Being purchase vide Invoice No. {invoice_number} dated {invoice_date} from {vendor_name}",
             voucher_numbering TEXT DEFAULT "invoice_number",
             roundoff_ledger TEXT DEFAULT "Round Off",
+            tds_ledger TEXT DEFAULT "",
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (company_id) REFERENCES companies(id)
         )`,
@@ -73,6 +74,40 @@ function initTallySchema(db) {
             FOREIGN KEY (company_id) REFERENCES companies(id)
         )`,
 
+        // Unit mapping: invoice unit → Tally unit + optional conversion factor
+        // Only used when enable_unit_conversion = 1 in tally_config
+        `CREATE TABLE IF NOT EXISTS tally_unit_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL,
+            invoice_unit TEXT NOT NULL,
+            tally_unit TEXT NOT NULL,
+            conversion_factor REAL NOT NULL DEFAULT 1.0,
+            UNIQUE(company_id, invoice_unit),
+            FOREIGN KEY (company_id) REFERENCES companies(id)
+        )`,
+
+        // Expense ledger map: line-item description → Tally ledger (Journal/expense vouchers)
+        `CREATE TABLE IF NOT EXISTS tally_expense_ledger_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            ledger_name TEXT NOT NULL,
+            UNIQUE(company_id, description),
+            FOREIGN KEY (company_id) REFERENCES companies(id)
+        )`,
+
+        // TDS section map: section code → rate + ledger (configured once, selected per invoice)
+        `CREATE TABLE IF NOT EXISTS tally_tds_section_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL,
+            section_code TEXT NOT NULL,
+            section_name TEXT NOT NULL DEFAULT "",
+            default_rate REAL NOT NULL DEFAULT 0,
+            ledger_name TEXT NOT NULL,
+            UNIQUE(company_id, section_code),
+            FOREIGN KEY (company_id) REFERENCES companies(id)
+        )`,
+
         // RCM config: tax_type + rate → liability ledger + input credit ledger
         `CREATE TABLE IF NOT EXISTS tally_rcm_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +125,12 @@ function initTallySchema(db) {
     ];
 
     // Columns to add to expenses if not present
+    const configAlters = [
+        `ALTER TABLE tally_config ADD COLUMN tds_ledger TEXT DEFAULT ""`,
+        `ALTER TABLE tally_config ADD COLUMN records_inventory INTEGER DEFAULT 0`,
+        `ALTER TABLE tally_config ADD COLUMN enable_unit_conversion INTEGER DEFAULT 0`
+    ];
+
     const expenseAlters = [
         `ALTER TABLE expenses ADD COLUMN company_id INTEGER DEFAULT 1`,
         `ALTER TABLE expenses ADD COLUMN tally_pushed INTEGER DEFAULT 0`,
@@ -106,6 +147,14 @@ function initTallySchema(db) {
             });
 
             // ALTER TABLE ignores "duplicate column" errors intentionally
+            configAlters.forEach(sql => {
+                db.run(sql, err => {
+                    if (err && !err.message.includes('duplicate column')) {
+                        console.error('Config alter error:', err.message);
+                    }
+                });
+            });
+
             expenseAlters.forEach(sql => {
                 db.run(sql, err => {
                     if (err && !err.message.includes('duplicate column')) {

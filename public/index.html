@@ -899,7 +899,15 @@
                         placeholder="Being purchase vide Invoice No. {invoice_number} dated {invoice_date} from {vendor_name}">
                     <p class="text-xs text-gray-500 mt-1">Variables: {invoice_number} {invoice_date} {vendor_name} {invoice_value}</p>
                 </div>
-                <div class="flex gap-3">
+                <!-- Inventory toggle -->
+                <div class="flex items-center gap-3 p-3 bg-indigo-50 rounded-lg border border-indigo-200">
+                    <input type="checkbox" id="ts-records-inventory" class="w-4 h-4 accent-indigo-600">
+                    <div>
+                        <label for="ts-records-inventory" class="text-sm font-medium text-indigo-800 cursor-pointer">This company records inventory in Tally</label>
+                        <p class="text-xs text-indigo-600 mt-0.5">When enabled, push modal will ask you to map each invoice line item to a Tally stock item.</p>
+                    </div>
+                </div>
+                <div class="flex gap-3 mt-4">
                     <button onclick="testTallyConnection()" class="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm hover:bg-blue-50">Test Connection</button>
                     <button onclick="saveTallyConfig()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">Save Config</button>
                     <span id="ts-connection-status" class="text-sm py-2"></span>
@@ -930,6 +938,81 @@
                 </div>
                 <button onclick="addRcmRow()" class="border border-orange-500 text-orange-600 px-3 py-1 rounded text-sm mr-2">+ Add Row</button>
                 <button onclick="saveRcmConfig()" class="bg-orange-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-orange-700">Save RCM Config</button>
+            </div>
+
+            <!-- TDS Section Config -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-lg font-semibold flex items-center"><i data-lucide="scissors" class="w-5 h-5 mr-2 text-red-500"></i>TDS Section Config</h3>
+                    <button onclick="loadTallyLedgersForTds()" class="text-sm text-blue-600 hover:underline">↻ Refresh ledgers</button>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">Configure each TDS section once. When pushing an invoice, just toggle "Apply TDS" and select the section — rate and ledger are auto-filled.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm border border-gray-200 rounded-lg overflow-hidden">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-3 py-2 text-left font-medium text-gray-600 w-24">Section</th>
+                                <th class="px-3 py-2 text-left font-medium text-gray-600">Name</th>
+                                <th class="px-3 py-2 text-left font-medium text-gray-600 w-24">Rate %</th>
+                                <th class="px-3 py-2 text-left font-medium text-gray-600">Tally Ledger</th>
+                                <th class="px-3 py-2 w-10"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="ts-tds-rows" class="divide-y divide-gray-100"></tbody>
+                    </table>
+                </div>
+                <div class="flex gap-2 mt-3">
+                    <button onclick="addTdsRow()" class="border border-red-400 text-red-600 px-3 py-1.5 rounded text-sm hover:bg-red-50">+ Add Section</button>
+                    <button onclick="saveTdsSections()" class="bg-red-600 text-white px-4 py-1.5 rounded text-sm hover:bg-red-700">Save TDS Config</button>
+                    <span id="ts-tds-status" class="text-sm py-1.5"></span>
+                </div>
+            </div>
+
+            <!-- Unit Mapping -->
+            <div class="bg-white rounded-lg shadow p-6 mb-6">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-lg font-semibold flex items-center"><i data-lucide="ruler" class="w-5 h-5 mr-2 text-purple-600"></i>Unit Mapping</h3>
+                    <label class="flex items-center gap-2 cursor-pointer select-none">
+                        <span class="text-sm text-gray-600">Enable unit conversion</span>
+                        <input type="checkbox" id="ts-enable-unit-conversion" onchange="toggleUnitConversionTable()" class="w-4 h-4 accent-purple-600">
+                    </label>
+                </div>
+                <p class="text-sm text-gray-500 mb-4">
+                    Units are auto-normalized by default (NOS→Nos, KGS→Kgs, MTR→Mtr).
+                    Enable <strong>unit conversion</strong> only if your client records in a different unit than the invoice —
+                    e.g. invoice shows MTR but Tally records in KGS with a conversion factor.
+                </p>
+                <!-- Conversion table — shown only when toggle is on -->
+                <div id="ts-unit-conversion-section" class="hidden">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-medium text-gray-700">Conversion Rules</span>
+                        <button onclick="loadTallyUnitsForMap()" class="text-xs text-blue-600 hover:underline">↻ Load units from Tally</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm border border-gray-200 rounded-lg overflow-hidden">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-3 py-2 text-left font-medium text-gray-600 w-1/3">Invoice shows</th>
+                                    <th class="px-3 py-2 text-left font-medium text-gray-600 w-1/3">Tally unit</th>
+                                    <th class="px-3 py-2 text-left font-medium text-gray-600 w-1/4">Factor <span class="font-normal text-gray-400">(×qty)</span></th>
+                                    <th class="px-3 py-2 w-10"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="ts-unit-map-rows" class="divide-y divide-gray-100"></tbody>
+                        </table>
+                    </div>
+                    <div class="flex gap-2 mt-3">
+                        <button onclick="addUnitMapRow()" class="border border-purple-500 text-purple-600 px-3 py-1.5 rounded text-sm hover:bg-purple-50">+ Add Row</button>
+                        <button onclick="saveUnitMap()" class="bg-purple-600 text-white px-4 py-1.5 rounded text-sm hover:bg-purple-700">Save Unit Mapping</button>
+                        <span id="ts-unit-map-status" class="text-sm py-1.5"></span>
+                    </div>
+                </div>
+                <!-- When conversion is off — show the auto-map reference -->
+                <div id="ts-unit-automap-info" class="text-xs text-gray-500 space-y-1">
+                    <p class="font-medium text-gray-600">Auto-normalized units (always active):</p>
+                    <p>NOS/NO/PCS → Nos &nbsp;|&nbsp; KGS/KG → Kgs &nbsp;|&nbsp; MTR/METER → Mtr &nbsp;|&nbsp; LTR/LITRE → Ltr &nbsp;|&nbsp; GMS/GM → Gms</p>
+                    <p>BOX → Box &nbsp;|&nbsp; SET → Set &nbsp;|&nbsp; RMT → Rmt &nbsp;|&nbsp; SQM/SQFT → Sqm/Sqf &nbsp;|&nbsp; PKT → Pkt &nbsp;|&nbsp; BTL → Btl &nbsp;|&nbsp; TON → Ton</p>
+                </div>
             </div>
         </div>
 
@@ -3988,86 +4071,135 @@ console.log('📦 Server response:', result);
 
     <!-- Push to Tally Modal -->
     <div id="push-tally-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
-        <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div class="p-6 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
-                <h3 class="text-lg font-semibold flex items-center gap-2">
-                    <i data-lucide="send" class="w-5 h-5 text-purple-600"></i>
-                    Push to Tally
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col">
+            <!-- Header -->
+            <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-white flex-shrink-0">
+                <h3 class="font-semibold text-gray-900 flex items-center gap-2">
+                    <i data-lucide="send" class="w-4 h-4 text-purple-600"></i>Push to Tally
                 </h3>
-                <button onclick="closePushModal()" class="text-gray-400 hover:text-gray-600">
-                    <i data-lucide="x" class="w-5 h-5"></i>
-                </button>
+                <button onclick="closePushModal()" class="text-gray-400 hover:text-gray-600"><i data-lucide="x" class="w-5 h-5"></i></button>
             </div>
 
-            <div class="p-6 space-y-5">
+            <!-- Body -->
+            <div class="p-5 space-y-4 overflow-y-auto flex-1">
                 <!-- Invoice summary -->
-                <div id="push-invoice-summary" class="bg-gray-50 rounded-lg p-4 text-sm text-gray-700"></div>
+                <div id="push-invoice-summary" class="bg-gray-50 rounded-lg p-3 text-sm text-gray-700">Loading…</div>
 
-                <!-- RCM toggle -->
-                <div class="flex items-center gap-3 p-3 bg-orange-50 rounded-lg border border-orange-200">
-                    <input type="checkbox" id="push-is-rcm" class="w-4 h-4 accent-orange-500">
-                    <label for="push-is-rcm" class="text-sm font-medium text-orange-800">Reverse Charge (RCM) applicable for this invoice</label>
-                </div>
-
-                <!-- Voucher type -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Voucher Type <span class="text-red-500">*</span></label>
-                    <select id="push-voucher-type" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
-                        <option value="">Loading from Tally…</option>
-                    </select>
-                </div>
-
-                <!-- Vendor ledger -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Vendor Ledger <span class="text-red-500">*</span></label>
-                    <div class="flex gap-2">
-                        <select id="push-vendor-ledger" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm">
-                            <option value="">Select vendor ledger…</option>
-                        </select>
-                        <button onclick="toggleCreateVendor()" id="create-vendor-btn" class="border border-blue-500 text-blue-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 whitespace-nowrap">+ Create New</button>
+                <!-- New vendor section (first time only) -->
+                <div id="push-new-vendor-section" class="hidden border border-amber-200 bg-amber-50 rounded-lg p-3">
+                    <p class="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">⚠ New vendor — will be created in Tally</p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="text-xs text-gray-600 mb-0.5 block">Ledger Name</label>
+                            <input id="push-vendor-name-input" type="text" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-600 mb-0.5 block">Under Group</label>
+                            <select id="push-vendor-group-input" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm">
+                                <option>Sundry Creditors</option>
+                            </select>
+                        </div>
                     </div>
-                    <!-- New vendor form -->
-                    <div id="create-vendor-form" class="hidden mt-3 p-3 bg-blue-50 rounded-lg space-y-2">
-                        <p class="text-xs text-blue-700 font-medium">New vendor will be created in Tally</p>
-                        <div class="flex gap-2">
-                            <div class="flex-1">
-                                <label class="block text-xs text-gray-600 mb-1">Ledger Name</label>
-                                <input id="new-vendor-ledger-name" type="text" class="w-full border border-gray-300 rounded px-2 py-1 text-sm" placeholder="Vendor name in Tally">
+                </div>
+
+                <!-- Mapped vendor (returning) -->
+                <div id="push-vendor-mapped" class="hidden flex items-center gap-1.5 text-sm text-green-700">
+                    <i data-lucide="check-circle" class="w-4 h-4 flex-shrink-0"></i>
+                    Vendor: <span id="push-vendor-mapped-name" class="font-medium"></span>
+                </div>
+
+                <!-- RCM (only when detected) -->
+                <div id="push-rcm-section" class="hidden">
+                    <div class="flex items-center gap-3 p-3 bg-orange-50 rounded-lg border border-orange-200">
+                        <input type="checkbox" id="push-is-rcm" class="w-4 h-4 accent-orange-500">
+                        <label for="push-is-rcm" class="text-sm font-medium text-orange-800">Reverse Charge (RCM) applicable</label>
+                    </div>
+                </div>
+
+                <!-- Purchase ledger section (purchase invoices) -->
+                <div id="push-purchase-ledger-section" class="hidden space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">Purchase Ledger</label>
+                    <div id="push-purchase-ledger-rows" class="space-y-2"></div>
+                </div>
+
+                <!-- Expense ledger section (expense/Journal invoices with line items) -->
+                <div id="push-expense-ledger-section" class="hidden space-y-2">
+                    <label class="block text-sm font-medium text-gray-700">Expense Ledger <span class="text-xs font-normal text-gray-500 ml-1">— per line item</span></label>
+                    <div id="push-expense-ledger-rows" class="space-y-1.5 border border-gray-200 rounded-lg p-3 bg-gray-50 max-h-52 overflow-y-auto"></div>
+                </div>
+
+                <!-- Stock items (purchase + records_inventory) -->
+                <div id="push-stock-section" class="hidden space-y-2">
+                    <div class="flex justify-between items-center">
+                        <label class="block text-sm font-medium text-gray-700 flex items-center gap-1">
+                            <i data-lucide="package" class="w-4 h-4 text-indigo-600"></i>Stock Items
+                        </label>
+                        <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                            <input type="checkbox" id="push-auto-create-items" class="w-3.5 h-3.5 accent-indigo-600">
+                            Auto-create missing
+                        </label>
+                    </div>
+                    <div id="push-stock-rows" class="space-y-1.5 border border-gray-200 rounded-lg p-3 bg-gray-50 max-h-52 overflow-y-auto"></div>
+                </div>
+
+                <!-- TDS toggle (always visible when sections configured) -->
+                <div id="push-tds-section" class="hidden">
+                    <div class="flex items-center gap-2 mb-2">
+                        <input type="checkbox" id="push-tds-apply" onchange="toggleTdsDetails()" class="w-4 h-4 accent-red-500 disabled:opacity-40 disabled:cursor-not-allowed">
+                        <label for="push-tds-apply" class="text-sm font-medium text-gray-700">Apply TDS</label>
+                        <span id="push-tds-no-sections-hint" class="hidden text-xs text-amber-600 ml-1">
+                            — no sections configured.
+                            <button onclick="closePushModal(); showTab('tally-setup')" class="underline hover:text-amber-800">Set up in Tally Setup →</button>
+                        </span>
+                    </div>
+                    <div id="push-tds-details" class="hidden border border-red-100 bg-red-50 rounded-lg p-3 space-y-2">
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-0.5">Section</label>
+                            <select id="push-tds-section-sel" onchange="onTdsSectionChange()" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm">
+                                <option value="">— Select TDS section —</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2">
+                            <div>
+                                <label class="block text-xs text-gray-600 mb-0.5">Rate</label>
+                                <div id="push-tds-rate-display" class="text-sm font-mono text-gray-700 py-1.5">—</div>
                             </div>
-                            <div class="flex-1">
-                                <label class="block text-xs text-gray-600 mb-1">Under Group</label>
-                                <select id="new-vendor-group" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
-                                    <option value="Sundry Creditors">Sundry Creditors</option>
-                                </select>
+                            <div>
+                                <label class="block text-xs text-gray-600 mb-0.5">Ledger</label>
+                                <div id="push-tds-ledger-display" class="text-xs text-gray-700 py-1.5 truncate">—</div>
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-600 mb-0.5">Amount ₹</label>
+                                <input type="number" id="push-tds-amount-input" class="w-full border border-gray-300 rounded px-2 py-1 text-sm" placeholder="0" min="0" step="0.01">
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Purchase ledger overrides (per rate) -->
-                <div id="push-purchase-ledgers-section">
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Purchase / Expense Ledger</label>
-                    <div id="push-purchase-ledger-rows" class="space-y-2"></div>
-                </div>
-
-                <!-- Due date -->
+                <!-- Narration / Due Date (collapsed) -->
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
-                    <input type="date" id="push-due-date" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
-                    <p class="text-xs text-gray-500 mt-1">Used for outstanding payment tracking in Tally</p>
+                    <button onclick="togglePushAdvanced()" class="text-sm text-gray-400 hover:text-gray-600 flex items-center gap-1">
+                        <i data-lucide="chevron-right" id="push-advanced-chevron" class="w-4 h-4 transition-transform"></i>
+                        Narration / Due Date
+                    </button>
+                    <div id="push-advanced-section" class="hidden mt-3 space-y-3">
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">Narration</label>
+                            <textarea id="push-narration" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">Due Date <span class="text-gray-400">(outstanding tracking)</span></label>
+                            <input type="date" id="push-due-date" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                        </div>
+                    </div>
                 </div>
 
-                <!-- Narration -->
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Narration</label>
-                    <textarea id="push-narration" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm resize-none"></textarea>
-                </div>
-
-                <!-- Error / status -->
+                <!-- Status -->
                 <div id="push-status" class="hidden"></div>
             </div>
 
-            <div class="p-6 border-t border-gray-200 flex justify-end gap-3 sticky bottom-0 bg-white">
+            <!-- Footer -->
+            <div class="p-4 border-t border-gray-200 flex justify-end gap-3 bg-white flex-shrink-0">
                 <button onclick="closePushModal()" class="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">Cancel</button>
                 <button onclick="confirmPush()" id="push-confirm-btn" class="bg-purple-600 text-white px-6 py-2 rounded-lg text-sm hover:bg-purple-700 flex items-center gap-2">
                     <i data-lucide="send" class="w-4 h-4"></i>Push to Tally
@@ -4087,6 +4219,10 @@ console.log('📦 Server response:', result);
         voucherTypes: [],
         stockItems: [],
         gstMap: [],
+        unitMap: [],
+        tallyUnits: [],
+        tdsSectionConfig: [],
+        tdsSections: [],
         currentExpenseId: null,
         preflight: null
     };
@@ -4129,8 +4265,9 @@ console.log('📦 Server response:', result);
     async function onTallyCompanyChange() {
         const sel = document.getElementById('tally-company-select');
         if (sel) tallyState.companyId = parseInt(sel.value) || 1;
-        await loadTallyConfig();
+        await loadTallyConfig();  // also calls loadUnitMap() inside
         await loadGstMap();
+        await loadTdsSections();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -4146,7 +4283,13 @@ console.log('📦 Server response:', result);
                 document.getElementById('ts-voucher-numbering').value = cfg.voucher_numbering || 'invoice_number';
                 document.getElementById('ts-roundoff-ledger').value = cfg.roundoff_ledger || 'Round Off';
                 document.getElementById('ts-narration-template').value = cfg.narration_template || '';
+                document.getElementById('ts-records-inventory').checked = !!cfg.records_inventory;
+                const convOn = !!cfg.enable_unit_conversion;
+                document.getElementById('ts-enable-unit-conversion').checked = convOn;
+                toggleUnitConversionTable(convOn);
             }
+            // Always load unit map (needed to show saved rows)
+            await loadUnitMap();
         } catch (e) { console.error('loadTallyConfig:', e); }
     }
 
@@ -4157,12 +4300,245 @@ console.log('📦 Server response:', result);
             tally_company_name: document.getElementById('ts-company-name').value.trim(),
             narration_template: document.getElementById('ts-narration-template').value.trim(),
             voucher_numbering: document.getElementById('ts-voucher-numbering').value,
-            roundoff_ledger: document.getElementById('ts-roundoff-ledger').value.trim()
+            roundoff_ledger: document.getElementById('ts-roundoff-ledger').value.trim(),
+            records_inventory: document.getElementById('ts-records-inventory').checked,
+            enable_unit_conversion: document.getElementById('ts-enable-unit-conversion').checked
         };
         try {
             await fetch('/api/tally/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
             showNotification('Saved', 'Tally config saved', 'success');
         } catch (e) { showNotification('Error', e.message, 'error'); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // UNIT MAPPING
+    // ═══════════════════════════════════════════════════════════════
+
+    function toggleUnitConversionTable(forceState) {
+        const on = forceState !== undefined ? forceState : document.getElementById('ts-enable-unit-conversion').checked;
+        document.getElementById('ts-unit-conversion-section').classList.toggle('hidden', !on);
+        document.getElementById('ts-unit-automap-info').classList.toggle('hidden', on);
+    }
+
+    async function loadUnitMap() {
+        try {
+            const res = await fetch(`/api/tally/unit-map/${tallyState.companyId}`);
+            tallyState.unitMap = await res.json();
+            renderUnitMapRows();
+        } catch (e) { console.error('loadUnitMap:', e); }
+    }
+
+    async function loadTallyUnitsForMap() {
+        try {
+            const res = await fetch(`/api/tally/units?company_id=${tallyState.companyId}`);
+            const data = await res.json();
+            tallyState.tallyUnits = data.units || [];
+            renderUnitMapRows();
+        } catch (e) {}
+    }
+
+    function renderUnitMapRows() {
+        const tbody = document.getElementById('ts-unit-map-rows');
+        if (!tbody) return;
+        const rows = tallyState.unitMap || [];
+        const units = tallyState.tallyUnits || ['Nos', 'Kgs', 'Mtr', 'Pcs', 'Box', 'Ltr', 'Set', 'Rmt', 'Sqm', 'Sqf', 'Pkt', 'Btl', 'Pair', 'Doz', 'Ton', 'Gms'];
+        const unitOpts = units.map(u => `<option value="${u}">${u}</option>`).join('');
+
+        tbody.innerHTML = rows.map(row => `
+            <tr data-id="${row.id}" class="hover:bg-gray-50">
+                <td class="px-3 py-2">
+                    <input type="text" value="${row.invoice_unit}" class="unit-map-invoice w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono uppercase" placeholder="e.g. MTR">
+                </td>
+                <td class="px-3 py-2">
+                    <select class="unit-map-tally w-full border border-gray-300 rounded px-2 py-1 text-sm">
+                        ${unitOpts}
+                    </select>
+                </td>
+                <td class="px-3 py-2">
+                    <input type="number" value="${row.conversion_factor}" min="0.0001" step="0.0001" class="unit-map-factor w-full border border-gray-300 rounded px-2 py-1 text-sm" placeholder="1.0">
+                </td>
+                <td class="px-2 py-2 text-center">
+                    <button onclick="deleteUnitMapRow(${row.id}, this)" class="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button>
+                </td>
+            </tr>`).join('');
+
+        // Set saved tally unit selections
+        rows.forEach((row, i) => {
+            const sel = tbody.querySelectorAll('.unit-map-tally')[i];
+            if (sel) sel.value = row.tally_unit;
+        });
+
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="px-3 py-4 text-gray-400 text-sm text-center">No rules yet. Click "+ Add Row" to add one.</td></tr>';
+        }
+    }
+
+    function addUnitMapRow() {
+        const units = tallyState.tallyUnits || ['Nos', 'Kgs', 'Mtr', 'Pcs', 'Box', 'Ltr', 'Set', 'Rmt', 'Sqm', 'Sqf', 'Pkt', 'Btl', 'Pair', 'Doz', 'Ton', 'Gms'];
+        const unitOpts = units.map(u => `<option value="${u}">${u}</option>`).join('');
+        const tbody = document.getElementById('ts-unit-map-rows');
+        // Remove "no rows" placeholder if present
+        if (tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
+        const tr = document.createElement('tr');
+        tr.dataset.id = 'new';
+        tr.className = 'hover:bg-gray-50';
+        tr.innerHTML = `
+            <td class="px-3 py-2"><input type="text" class="unit-map-invoice w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono uppercase" placeholder="e.g. MTR"></td>
+            <td class="px-3 py-2"><select class="unit-map-tally w-full border border-gray-300 rounded px-2 py-1 text-sm">${unitOpts}</select></td>
+            <td class="px-3 py-2"><input type="number" value="1" min="0.0001" step="0.0001" class="unit-map-factor w-full border border-gray-300 rounded px-2 py-1 text-sm"></td>
+            <td class="px-2 py-2 text-center"><button onclick="this.closest('tr').remove()" class="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button></td>`;
+        tbody.appendChild(tr);
+    }
+
+    async function deleteUnitMapRow(id, btn) {
+        try {
+            await fetch(`/api/tally/unit-map/${id}`, { method: 'DELETE' });
+            btn.closest('tr').remove();
+            if (!document.getElementById('ts-unit-map-rows').querySelectorAll('tr[data-id]').length) {
+                renderUnitMapRows(); // show placeholder
+            }
+        } catch (e) { alert('Delete failed: ' + e.message); }
+    }
+
+    async function saveUnitMap() {
+        const tbody = document.getElementById('ts-unit-map-rows');
+        const rows = [...tbody.querySelectorAll('tr[data-id]')];
+        const statusEl = document.getElementById('ts-unit-map-status');
+        statusEl.textContent = 'Saving…';
+        try {
+            for (const tr of rows) {
+                const invoiceUnit = tr.querySelector('.unit-map-invoice').value.trim().toUpperCase();
+                const tallyUnit = tr.querySelector('.unit-map-tally').value;
+                const factor = parseFloat(tr.querySelector('.unit-map-factor').value) || 1.0;
+                if (!invoiceUnit || !tallyUnit) continue;
+                await fetch('/api/tally/unit-map', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_id: tallyState.companyId, invoice_unit: invoiceUnit, tally_unit: tallyUnit, conversion_factor: factor })
+                });
+            }
+            statusEl.textContent = '✅ Saved';
+            setTimeout(() => { statusEl.textContent = ''; }, 2000);
+            await loadUnitMap();
+        } catch (e) {
+            statusEl.textContent = '❌ ' + e.message;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // TDS SECTION CONFIG
+    // ═══════════════════════════════════════════════════════════════
+
+    async function loadTdsSections() {
+        try {
+            const res = await fetch(`/api/tally/tds-sections/${tallyState.companyId}`);
+            tallyState.tdsSectionConfig = await res.json();
+            renderTdsSectionRows(tallyState.tdsSectionConfig, tallyState.ledgers);
+        } catch (e) { console.error('loadTdsSections:', e); }
+    }
+
+    async function loadTallyLedgersForTds() {
+        try {
+            const res = await fetch(`/api/tally/ledgers?company_id=${tallyState.companyId}`);
+            const data = await res.json();
+            tallyState.ledgers = data.ledgers || [];
+            renderTdsSectionRows(tallyState.tdsSectionConfig || [], tallyState.ledgers);
+        } catch (e) {
+            document.getElementById('ts-tds-status').textContent = '❌ Cannot fetch ledgers from Tally';
+        }
+    }
+
+    function renderTdsSectionRows(rows, ledgers) {
+        const tbody = document.getElementById('ts-tds-rows');
+        if (!tbody) return;
+        const ledgerOpts = (ledgers || []).map(l => `<option value="${escHtml(l.name)}">${escHtml(l.name)}</option>`).join('');
+        tbody.innerHTML = rows.map(r => `
+            <tr data-id="${r.id}">
+                <td class="px-3 py-2"><input class="tds-code border border-gray-300 rounded px-2 py-1 text-sm w-20" value="${escHtml(r.section_code)}"></td>
+                <td class="px-3 py-2"><input class="tds-name border border-gray-300 rounded px-2 py-1 text-sm w-full" value="${escHtml(r.section_name)}"></td>
+                <td class="px-3 py-2"><input type="number" step="0.01" min="0" class="tds-rate border border-gray-300 rounded px-2 py-1 text-sm w-20" value="${r.default_rate}"></td>
+                <td class="px-3 py-2">
+                    <select class="tds-ledger border border-gray-300 rounded px-2 py-1 text-sm w-full" data-saved="${escHtml(r.ledger_name)}">
+                        <option value="${escHtml(r.ledger_name)}">${escHtml(r.ledger_name)}</option>
+                        ${ledgerOpts}
+                    </select>
+                </td>
+                <td class="px-2 py-2 text-center">
+                    <button onclick="deleteTdsRow(${r.id}, this)" class="text-red-400 hover:text-red-600 text-xl leading-none font-bold">×</button>
+                </td>
+            </tr>
+        `).join('');
+        // Restore saved ledger selection properly
+        tbody.querySelectorAll('tr[data-id] .tds-ledger').forEach(sel => {
+            if (sel.dataset.saved) sel.value = sel.dataset.saved;
+        });
+    }
+
+    function addTdsRow() {
+        const ledgerOpts = (tallyState.ledgers || []).map(l => `<option value="${escHtml(l.name)}">${escHtml(l.name)}</option>`).join('');
+        const tbody = document.getElementById('ts-tds-rows');
+        const tr = document.createElement('tr');
+        tr.dataset.id = 'new_' + Date.now();
+        tr.innerHTML = `
+            <td class="px-3 py-2"><input class="tds-code border border-gray-300 rounded px-2 py-1 text-sm w-20" placeholder="194C"></td>
+            <td class="px-3 py-2"><input class="tds-name border border-gray-300 rounded px-2 py-1 text-sm w-full" placeholder="Contractor"></td>
+            <td class="px-3 py-2"><input type="number" step="0.01" min="0" class="tds-rate border border-gray-300 rounded px-2 py-1 text-sm w-20" placeholder="1"></td>
+            <td class="px-3 py-2">
+                <select class="tds-ledger border border-gray-300 rounded px-2 py-1 text-sm w-full">
+                    <option value="">— select ledger —</option>
+                    ${ledgerOpts}
+                </select>
+            </td>
+            <td class="px-2 py-2 text-center">
+                <button onclick="this.closest('tr').remove()" class="text-red-400 hover:text-red-600 text-xl leading-none font-bold">×</button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+        tr.querySelector('.tds-code').focus();
+    }
+
+    async function deleteTdsRow(id, btn) {
+        if (!confirm('Delete this TDS section?')) return;
+        try {
+            await fetch(`/api/tally/tds-sections/${id}`, { method: 'DELETE' });
+            btn.closest('tr').remove();
+        } catch (e) {
+            document.getElementById('ts-tds-status').textContent = '❌ Delete failed';
+            setTimeout(() => { document.getElementById('ts-tds-status').textContent = ''; }, 2500);
+        }
+    }
+
+    async function saveTdsSections() {
+        const tbody = document.getElementById('ts-tds-rows');
+        const rows = [...tbody.querySelectorAll('tr[data-id]')];
+        const statusEl = document.getElementById('ts-tds-status');
+        statusEl.textContent = 'Saving…';
+        statusEl.className = 'text-sm py-1.5 text-gray-500';
+        try {
+            // Build mappings array — route expects { company_id, mappings: [...] }
+            const mappings = [];
+            for (const tr of rows) {
+                const code   = tr.querySelector('.tds-code').value.trim().toUpperCase();
+                const name   = tr.querySelector('.tds-name').value.trim();
+                const rate   = parseFloat(tr.querySelector('.tds-rate').value) || 0;
+                const ledger = tr.querySelector('.tds-ledger').value.trim();
+                if (!code || !ledger) continue;
+                mappings.push({ section_code: code, section_name: name, default_rate: rate, ledger_name: ledger });
+            }
+            const res = await fetch('/api/tally/tds-sections', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ company_id: tallyState.companyId, mappings })
+            });
+            if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Save failed'); }
+            statusEl.textContent = '✅ Saved';
+            statusEl.className = 'text-sm py-1.5 text-green-600 font-medium';
+            setTimeout(() => { statusEl.textContent = ''; }, 2500);
+            await loadTdsSections();
+        } catch (e) {
+            statusEl.textContent = '❌ ' + e.message;
+            statusEl.className = 'text-sm py-1.5 text-red-600';
+        }
     }
 
     async function testTallyConnection() {
@@ -4308,114 +4684,230 @@ console.log('📦 Server response:', result);
     // ═══════════════════════════════════════════════════════════════
     async function openPushModal(expenseId) {
         tallyState.currentExpenseId = expenseId;
+        // Show modal immediately with reset state
         document.getElementById('push-tally-modal').classList.remove('hidden');
         document.getElementById('push-status').classList.add('hidden');
-        document.getElementById('push-confirm-btn').disabled = false;
-        document.getElementById('push-invoice-summary').innerHTML = 'Loading…';
+        document.getElementById('push-confirm-btn').disabled = true;
+        document.getElementById('push-invoice-summary').innerHTML = '<span class="text-gray-400 text-sm animate-pulse">Loading…</span>';
         document.getElementById('push-narration').value = '';
         document.getElementById('push-due-date').value = '';
-        document.getElementById('push-is-rcm').checked = false;
-        document.getElementById('create-vendor-form').classList.add('hidden');
+        document.getElementById('push-advanced-section').classList.add('hidden');
+        document.getElementById('push-advanced-chevron').style.transform = '';
+        document.getElementById('push-tds-apply').checked = false;
+        document.getElementById('push-tds-details').classList.add('hidden');
+        ['push-new-vendor-section','push-vendor-mapped','push-rcm-section',
+         'push-purchase-ledger-section','push-expense-ledger-section',
+         'push-stock-section','push-tds-section'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('hidden');
+        });
         lucide.createIcons();
 
         try {
-            // Preflight check
-            const pfRes = await fetch(`/api/expenses/${expenseId}/tally-preflight?company_id=${tallyState.companyId}`);
-            tallyState.preflight = await pfRes.json();
-            const pf = tallyState.preflight;
+            // ── Phase 1: all SQLite calls in parallel (fast, no Tally needed) ──
+            const [pfRes, pmRes, cfgRes] = await Promise.all([
+                fetch(`/api/expenses/${expenseId}/tally-preflight?company_id=${tallyState.companyId}`),
+                fetch(`/api/tally/purchase-map/${tallyState.companyId}`),
+                fetch(`/api/tally/config/${tallyState.companyId}`)
+            ]);
+            const [pf, purchaseMap, cfg] = await Promise.all([pfRes.json(), pmRes.json(), cfgRes.json()]);
+            tallyState.preflight = pf;
 
             if (pf.already_pushed) {
-                showPushStatus('error', `This invoice was already pushed to Tally on ${new Date(pf.pushed_at).toLocaleString()}.`);
+                showPushStatus('error', `Already pushed on ${new Date(pf.pushed_at).toLocaleString()}.`);
                 document.getElementById('push-confirm-btn').disabled = true;
+                document.getElementById('push-invoice-summary').innerHTML = '';
                 return;
             }
 
-            // Invoice summary
-            document.getElementById('push-invoice-summary').innerHTML = `
-                <div class="grid grid-cols-2 gap-2">
-                    <div><span class="text-gray-500">Invoice #</span> <span class="font-medium">${pf.invoice_id}</span></div>
-                    <div><span class="text-gray-500">Vendor</span> <span class="font-medium">${pf.vendor?.name || '—'}</span></div>
-                    <div><span class="text-gray-500">GSTIN</span> <span class="font-medium">${pf.vendor?.gstin || '—'}</span></div>
-                    <div><span class="text-gray-500">GST Type</span> <span class="font-medium uppercase">${pf.gst_type}</span></div>
-                </div>
-                ${pf.rcm_detected ? '<p class="mt-2 text-orange-600 text-xs font-medium">⚠ RCM detected in invoice text — verify below</p>' : ''}`;
-
-            if (pf.rcm_detected) document.getElementById('push-is-rcm').checked = true;
-
-            // Load live data from Tally
-            const [vtRes, ldRes, grpRes] = await Promise.all([
-                fetch(`/api/tally/voucher-types?company_id=${tallyState.companyId}`),
-                fetch(`/api/tally/ledgers?company_id=${tallyState.companyId}`),
-                fetch(`/api/tally/groups?company_id=${tallyState.companyId}`)
+            // ── Phase 2: kick off all Tally calls in parallel (may be slow) ──
+            const needsStockItems = !pf.is_expense && pf.records_inventory && pf.stock_items_needed?.length > 0;
+            const tallyPromise = Promise.all([
+                // use cached ledgers if already fetched; still refresh in background
+                tallyState.ledgers.length > 0
+                    ? Promise.resolve({ ledgers: tallyState.ledgers })
+                    : fetch(`/api/tally/ledgers?company_id=${tallyState.companyId}`).then(r => r.json()).catch(() => ({ ledgers: [] })),
+                tallyState.groups.length > 0
+                    ? Promise.resolve({ groups: tallyState.groups })
+                    : fetch(`/api/tally/groups?company_id=${tallyState.companyId}`).then(r => r.json()).catch(() => ({ groups: [] })),
+                needsStockItems
+                    ? fetch(`/api/tally/stock-items?company_id=${tallyState.companyId}`).then(r => r.json()).catch(() => ({ stock_items: [] }))
+                    : Promise.resolve({ stock_items: [] })
             ]);
-            const vtData = await vtRes.json();
-            const ldData = await ldRes.json();
-            const grpData = await grpRes.json();
-            tallyState.voucherTypes = vtData.voucher_types || [];
-            tallyState.ledgers = ldData.ledgers || [];
-            tallyState.groups = grpData.groups || [];
 
-            // Voucher type dropdown
-            const vtSel = document.getElementById('push-voucher-type');
-            vtSel.innerHTML = tallyState.voucherTypes.map(t => `<option value="${t}">${t}</option>`).join('');
-            vtSel.value = 'Purchase';
+            // ── Render everything that doesn't need Tally immediately ──
 
-            // Vendor ledger dropdown
-            const vdSel = document.getElementById('push-vendor-ledger');
-            const ledgerOpts = tallyState.ledgers.map(l => `<option value="${l.name}">${l.name}</option>`).join('');
-            vdSel.innerHTML = '<option value="">— Select vendor ledger —</option>' + ledgerOpts;
-            if (pf.vendor?.mapped_ledger) vdSel.value = pf.vendor.mapped_ledger;
+            // 1. Invoice summary badge
+            const badge = pf.is_expense
+                ? '<span class="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded ml-2">Expense / Journal</span>'
+                : '<span class="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded ml-2">Purchase</span>';
+            document.getElementById('push-invoice-summary').innerHTML = `
+                <div class="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+                    <span><span class="text-gray-500">Invoice</span> <span class="font-medium">${escHtml(pf.invoice_number || '#' + pf.invoice_id)}</span>${badge}</span>
+                    <span><span class="text-gray-500">Vendor</span> <span class="font-medium">${escHtml(pf.vendor?.name || '—')}</span></span>
+                    <span class="uppercase"><span class="text-gray-500">GST</span> <span class="font-medium">${pf.gst_type}</span></span>
+                </div>`;
 
-            // Groups for new vendor
-            const grpSel = document.getElementById('new-vendor-group');
-            grpSel.innerHTML = tallyState.groups.map(g => `<option value="${g}">${g}</option>`).join('');
-            grpSel.value = 'Sundry Creditors';
+            // 2. Vendor (mapped only — new vendor needs groups from Tally, handled below)
+            if (!pf.vendor?.needs_mapping) {
+                const mapped = document.getElementById('push-vendor-mapped');
+                mapped.classList.remove('hidden');
+                document.getElementById('push-vendor-mapped-name').textContent = pf.vendor?.mapped_ledger || pf.vendor?.name || '';
+            }
 
-            if (pf.vendor?.name) document.getElementById('new-vendor-ledger-name').value = pf.vendor.name;
+            // 3. RCM
+            if (pf.rcm_detected) {
+                document.getElementById('push-rcm-section').classList.remove('hidden');
+                document.getElementById('push-is-rcm').checked = true;
+            }
 
-            // Purchase ledger rows (one per missing rate)
-            const plContainer = document.getElementById('push-purchase-ledger-rows');
-            plContainer.innerHTML = '';
+            // 4. TDS section (from SQLite preflight)
+            const tdsSections = pf.tds_sections || [];
+            tallyState.tdsSections = tdsSections;
+            document.getElementById('push-tds-section').classList.remove('hidden');
+            if (tdsSections.length === 0) {
+                document.getElementById('push-tds-no-sections-hint').classList.remove('hidden');
+                document.getElementById('push-tds-apply').disabled = true;
+            } else {
+                document.getElementById('push-tds-no-sections-hint').classList.add('hidden');
+                document.getElementById('push-tds-apply').disabled = false;
+                const secSel = document.getElementById('push-tds-section-sel');
+                secSel.innerHTML = '<option value="">— Select TDS section —</option>' +
+                    tdsSections.map(s => `<option value="${escHtml(s.section_code)}">${escHtml(s.section_code)} — ${escHtml(s.section_name)} (${s.default_rate}%)</option>`).join('');
+                if (pf.tds_amount > 0) {
+                    document.getElementById('push-tds-apply').checked = true;
+                    document.getElementById('push-tds-details').classList.remove('hidden');
+                    document.getElementById('push-tds-amount-input').value = pf.tds_amount;
+                }
+            }
 
-            // Load saved purchase map for pre-fill
-            const pmRes = await fetch(`/api/tally/purchase-map/${tallyState.companyId}`);
-            const purchaseMap = await pmRes.json();
-
-            (pf.rates || [0]).forEach(rate => {
-                const saved = purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate !== null && Math.abs(p.tax_rate - rate) < 0.01)
-                           || purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate === null);
-                const isMissing = (pf.missing_purchase_ledgers || []).includes(rate);
-                plContainer.innerHTML += `
-                    <div class="flex items-center gap-3">
-                        <span class="text-sm text-gray-600 w-32 font-mono">${pf.gst_type.toUpperCase()} @ ${rate}%</span>
-                        <select data-rate="${rate}" data-gsttype="${pf.gst_type}" class="purchase-ledger-sel flex-1 border ${isMissing ? 'border-red-400 bg-red-50' : 'border-gray-300'} rounded px-2 py-1 text-sm">
-                            <option value="">— Select purchase/expense ledger —</option>
-                            ${ledgerOpts}
-                        </select>
-                        ${isMissing ? '<span class="text-red-500 text-xs">Required</span>' : ''}
-                    </div>`;
-            });
-            // Pre-fill saved values
-            document.querySelectorAll('.purchase-ledger-sel').forEach(sel => {
-                const saved = purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate !== null && Math.abs(p.tax_rate - parseFloat(sel.dataset.rate)) < 0.01)
-                           || purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate === null);
-                if (saved) sel.value = saved.ledger_name;
-            });
-
-            // Default narration from config template
-            const cfgRes = await fetch(`/api/tally/config/${tallyState.companyId}`);
-            const cfg = await cfgRes.json();
-            if (cfg && cfg.narration_template) {
+            // 5. Narration pre-fill
+            if (cfg?.narration_template) {
                 document.getElementById('push-narration').value = cfg.narration_template
-                    .replace('{invoice_number}', pf.invoice_id)
+                    .replace('{invoice_number}', pf.invoice_number || pf.invoice_id)
                     .replace('{vendor_name}', pf.vendor?.name || '')
-                    .replace('{invoice_date}', '')
-                    .replace('{invoice_value}', '');
+                    .replace('{invoice_date}', '').replace('{invoice_value}', '');
+            }
+
+            // Show ledger rows as loading placeholders
+            if (pf.is_expense && pf.has_line_items) {
+                document.getElementById('push-expense-ledger-section').classList.remove('hidden');
+                document.getElementById('push-expense-ledger-rows').innerHTML =
+                    '<p class="text-xs text-gray-400 animate-pulse">Loading ledgers from Tally…</p>';
+            } else {
+                document.getElementById('push-purchase-ledger-section').classList.remove('hidden');
+                document.getElementById('push-purchase-ledger-rows').innerHTML =
+                    '<p class="text-xs text-gray-400 animate-pulse">Loading ledgers from Tally…</p>';
+            }
+            if (needsStockItems) {
+                document.getElementById('push-stock-section').classList.remove('hidden');
+                document.getElementById('push-stock-rows').innerHTML =
+                    '<p class="text-xs text-gray-400 animate-pulse">Loading stock items…</p>';
             }
 
             lucide.createIcons();
+
+            // ── Phase 3: wait for Tally data and populate dropdowns ──
+            const [ldData, grpData, siData] = await tallyPromise;
+            tallyState.ledgers = ldData.ledgers || [];
+            tallyState.groups  = grpData.groups  || [];
+
+            if (tallyState.ledgers.length === 0) {
+                const msg = '<p class="text-xs text-red-500">⚠ Could not load ledgers from Tally — is Tally open and connected?</p>';
+                document.getElementById('push-purchase-ledger-rows').innerHTML = msg;
+                document.getElementById('push-expense-ledger-rows').innerHTML  = msg;
+                document.getElementById('push-confirm-btn').disabled = false;
+                lucide.createIcons();
+                return;
+            }
+
+            const ledgerOpts = tallyState.ledgers.map(l => `<option value="${escHtml(l.name)}">${escHtml(l.name)}</option>`).join('');
+
+            // New vendor section (needs groups)
+            if (pf.vendor?.needs_mapping) {
+                document.getElementById('push-new-vendor-section').classList.remove('hidden');
+                document.getElementById('push-vendor-name-input').value = pf.vendor?.name || '';
+                const grpSel = document.getElementById('push-vendor-group-input');
+                grpSel.innerHTML = tallyState.groups.map(g => `<option value="${escHtml(g)}">${escHtml(g)}</option>`).join('');
+                grpSel.value = 'Sundry Creditors';
+            }
+
+            // Purchase / Expense ledger dropdowns
+            if (pf.is_expense && pf.has_line_items) {
+                const expRows = document.getElementById('push-expense-ledger-rows');
+                expRows.innerHTML = (pf.expense_items || []).map(item => {
+                    const d = escHtml(item.description);
+                    return `<div class="flex items-center gap-2">
+                        <span class="text-sm text-gray-700 w-40 truncate flex-shrink-0" title="${d}">${d}</span>
+                        <select class="expense-ledger-sel flex-1 border ${item.saved_ledger ? 'border-gray-300' : 'border-red-400 bg-red-50'} rounded px-2 py-1 text-sm" data-desc="${d}">
+                            <option value="">— Select expense ledger —</option>
+                            ${ledgerOpts}
+                        </select>
+                    </div>`;
+                }).join('');
+                expRows.querySelectorAll('.expense-ledger-sel').forEach(sel => {
+                    const item = (pf.expense_items || []).find(i => i.description === sel.dataset.desc);
+                    if (item?.saved_ledger) sel.value = item.saved_ledger;
+                });
+            } else {
+                const plRows = document.getElementById('push-purchase-ledger-rows');
+                plRows.innerHTML = (pf.rates || [0]).map(rate => {
+                    const saved = purchaseMap.find(p => p.gst_type === pf.gst_type && p.tax_rate >= 0 && Math.abs(p.tax_rate - rate) < 0.01)
+                                || purchaseMap.find(p => p.gst_type === pf.gst_type && (p.tax_rate === -1 || p.tax_rate === null));
+                    const isMissing = (pf.missing_purchase_ledgers || []).includes(rate);
+                    if (saved && !isMissing) {
+                        return `<div class="flex items-center gap-2 text-sm text-green-700">
+                            <i data-lucide="check-circle" class="w-4 h-4 flex-shrink-0"></i>
+                            <span class="font-mono text-xs text-gray-500 w-28">${pf.gst_type.toUpperCase()} @ ${rate}%</span>
+                            <span class="font-medium">${escHtml(saved.ledger_name)}</span>
+                        </div>`;
+                    }
+                    return `<div class="flex items-center gap-2">
+                        <span class="text-xs text-gray-500 font-mono w-28 flex-shrink-0">${pf.gst_type.toUpperCase()} @ ${rate}%</span>
+                        <select data-rate="${rate}" data-gsttype="${pf.gst_type}" class="purchase-ledger-sel flex-1 border border-red-400 bg-red-50 rounded px-2 py-1 text-sm">
+                            <option value="">— Select purchase ledger —</option>
+                            ${ledgerOpts}
+                        </select>
+                        <span class="text-red-500 text-xs flex-shrink-0">Required</span>
+                    </div>`;
+                }).join('');
+                plRows.querySelectorAll('.purchase-ledger-sel').forEach(sel => {
+                    const s = purchaseMap.find(p => p.gst_type === pf.gst_type && Math.abs(p.tax_rate - parseFloat(sel.dataset.rate)) < 0.01)
+                            || purchaseMap.find(p => p.gst_type === pf.gst_type && (p.tax_rate === -1 || p.tax_rate === null));
+                    if (s) sel.value = s.ledger_name;
+                });
+            }
+
+            // Stock items
+            if (needsStockItems) {
+                const siOpts = (siData.stock_items || []).map(s => `<option value="${escHtml(s)}">${escHtml(s)}</option>`).join('');
+                document.getElementById('push-stock-rows').innerHTML = pf.stock_items_needed.map(item => {
+                    const unitLabel = item.conversion_factor !== 1
+                        ? `${item.invoice_qty} ${item.invoice_unit}→${item.tally_qty} ${item.tally_unit}`
+                        : `${item.invoice_qty} ${item.tally_unit}`;
+                    const d = escHtml(item.description);
+                    return `<div class="grid grid-cols-12 gap-2 items-center text-sm">
+                        <div class="col-span-4 font-medium text-gray-700 truncate" title="${d}">${d}</div>
+                        <div class="col-span-3 text-xs text-gray-400 font-mono">${unitLabel}</div>
+                        <div class="col-span-5">
+                            <select class="stock-item-sel w-full border border-gray-300 rounded px-2 py-1 text-sm" data-desc="${d}">
+                                <option value="">— same as invoice —</option>
+                                ${siOpts}
+                            </select>
+                        </div>
+                    </div>`;
+                }).join('');
+                document.getElementById('push-stock-rows').querySelectorAll('.stock-item-sel').forEach(sel => {
+                    const item = pf.stock_items_needed.find(s => s.description === sel.dataset.desc);
+                    if (item?.saved_tally_item) sel.value = item.saved_tally_item;
+                });
+            }
+
+            document.getElementById('push-confirm-btn').disabled = false;
+            lucide.createIcons();
         } catch (e) {
-            showPushStatus('error', 'Failed to load push data: ' + e.message);
+            showPushStatus('error', 'Failed to load: ' + e.message);
+            document.getElementById('push-confirm-btn').disabled = false;
         }
     }
 
@@ -4425,9 +4917,38 @@ console.log('📦 Server response:', result);
         tallyState.preflight = null;
     }
 
-    function toggleCreateVendor() {
-        const form = document.getElementById('create-vendor-form');
-        form.classList.toggle('hidden');
+    function togglePushAdvanced() {
+        const sec = document.getElementById('push-advanced-section');
+        const chevron = document.getElementById('push-advanced-chevron');
+        const hidden = sec.classList.toggle('hidden');
+        chevron.style.transform = hidden ? '' : 'rotate(90deg)';
+    }
+
+    function toggleTdsDetails() {
+        const apply = document.getElementById('push-tds-apply').checked;
+        document.getElementById('push-tds-details').classList.toggle('hidden', !apply);
+    }
+
+    function onTdsSectionChange() {
+        const code = document.getElementById('push-tds-section-sel').value;
+        const section = (tallyState.tdsSections || []).find(s => s.section_code === code);
+        if (section) {
+            document.getElementById('push-tds-rate-display').textContent = section.default_rate + '%';
+            document.getElementById('push-tds-ledger-display').textContent = section.ledger_name;
+            document.getElementById('push-tds-ledger-display').title = section.ledger_name;
+            // Auto-calculate amount from taxable
+            const taxable = tallyState.preflight?.taxable_amount || 0;
+            if (taxable > 0) {
+                document.getElementById('push-tds-amount-input').value = Math.round(taxable * section.default_rate / 100 * 100) / 100;
+            }
+        } else {
+            document.getElementById('push-tds-rate-display').textContent = '—';
+            document.getElementById('push-tds-ledger-display').textContent = '—';
+        }
+    }
+
+    function escHtml(str) {
+        return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
     function showPushStatus(type, msg) {
@@ -4444,62 +4965,87 @@ console.log('📦 Server response:', result);
         const pf = tallyState.preflight;
         if (!pf) return;
 
-        // Collect purchase ledger overrides + save them
+        // 1. Vendor
+        const isNewVendor = !document.getElementById('push-new-vendor-section').classList.contains('hidden');
+        const newVendorName = document.getElementById('push-vendor-name-input')?.value.trim();
+        const newVendorGroup = document.getElementById('push-vendor-group-input')?.value || 'Sundry Creditors';
+        if (isNewVendor && !newVendorName) { showPushStatus('error', 'Please enter a vendor ledger name.'); return; }
+
+        // 2. Purchase ledger overrides
         const purchaseLedgerOverrides = {};
         const purchaseMappingsToSave = [];
-        let missingRequired = false;
-
+        let missingPurchase = false;
         document.querySelectorAll('.purchase-ledger-sel').forEach(sel => {
             const rate = parseFloat(sel.dataset.rate);
             const gstType = sel.dataset.gsttype;
-            const key = `${gstType}_${rate}`;
             if (sel.value) {
-                purchaseLedgerOverrides[key] = sel.value;
+                purchaseLedgerOverrides[`${gstType}_${rate}`] = sel.value;
                 purchaseMappingsToSave.push({ company_id: tallyState.companyId, gst_type: gstType, tax_rate: rate, ledger_name: sel.value });
-            } else if ((pf.missing_purchase_ledgers || []).includes(rate)) {
-                missingRequired = true;
-            }
+            } else if ((pf.missing_purchase_ledgers || []).includes(rate)) { missingPurchase = true; }
+        });
+        if (missingPurchase) { showPushStatus('error', 'Please select all required purchase ledgers.'); return; }
+
+        // 3. Expense ledger overrides
+        const expenseLedgerOverrides = {};
+        const expenseMappingsToSave = [];
+        let missingExpense = false;
+        document.querySelectorAll('.expense-ledger-sel').forEach(sel => {
+            const desc = sel.dataset.desc;
+            if (sel.value) {
+                expenseLedgerOverrides[desc] = sel.value;
+                expenseMappingsToSave.push({ company_id: tallyState.companyId, description: desc, ledger_name: sel.value });
+            } else { missingExpense = true; }
+        });
+        if (missingExpense) { showPushStatus('error', 'Please select expense ledgers for all line items.'); return; }
+
+        // 4. Stock item overrides
+        const stockItemOverrides = {};
+        let autoCreateStock = document.getElementById('push-auto-create-items')?.checked || false;
+        document.querySelectorAll('.stock-item-sel').forEach(sel => {
+            if (sel.value) stockItemOverrides[sel.dataset.desc] = sel.value;
         });
 
-        if (missingRequired) { showPushStatus('error', 'Please select a purchase/expense ledger for all required rates.'); return; }
-
-        const vendorLedger = document.getElementById('push-vendor-ledger').value;
-        const createVendor = !document.getElementById('create-vendor-form').classList.contains('hidden');
-        const newVendorName = document.getElementById('new-vendor-ledger-name').value.trim();
-        const newVendorGroup = document.getElementById('new-vendor-group').value;
-        const finalVendorLedger = createVendor && newVendorName ? newVendorName : vendorLedger;
-
-        if (!finalVendorLedger) { showPushStatus('error', 'Please select or create a vendor ledger.'); return; }
+        // 5. TDS
+        const tdsApply = document.getElementById('push-tds-apply')?.checked;
+        const tdsSectionCode = tdsApply ? (document.getElementById('push-tds-section-sel')?.value || null) : null;
+        const tdsAmountOverride = tdsApply ? parseFloat(document.getElementById('push-tds-amount-input')?.value) || 0 : 0;
+        if (tdsApply && !tdsSectionCode && (tallyState.tdsSections || []).length > 0) {
+            showPushStatus('error', 'Please select a TDS section.'); return;
+        }
 
         btn.disabled = true;
         btn.innerHTML = '<i data-lucide="loader" class="w-4 h-4 animate-spin inline mr-1"></i>Pushing…';
         lucide.createIcons();
 
-        // Save purchase mappings for future
+        // Save purchase + expense mappings for future
         for (const m of purchaseMappingsToSave) {
-            await fetch('/api/tally/purchase-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(m) }).catch(() => {});
+            await fetch('/api/tally/purchase-map', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(m) }).catch(() => {});
+        }
+        for (const m of expenseMappingsToSave) {
+            await fetch('/api/tally/expense-ledger-map', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(m) }).catch(() => {});
         }
 
         const body = {
             company_id: tallyState.companyId,
-            voucher_type: document.getElementById('push-voucher-type').value,
             narration: document.getElementById('push-narration').value,
             due_date: document.getElementById('push-due-date').value || null,
-            is_rcm: document.getElementById('push-is-rcm').checked,
-            vendor_ledger_name: finalVendorLedger,
+            is_rcm: document.getElementById('push-is-rcm')?.checked || false,
+            create_vendor: isNewVendor,
+            vendor_ledger_name: isNewVendor ? newVendorName : null,
             vendor_group: newVendorGroup,
-            create_vendor: createVendor && !!newVendorName,
-            purchase_ledger_overrides: purchaseLedgerOverrides
+            purchase_ledger_overrides: purchaseLedgerOverrides,
+            expense_ledger_overrides: expenseLedgerOverrides,
+            stock_item_overrides: stockItemOverrides,
+            auto_create_stock_items: autoCreateStock,
+            tds_section_code: tdsSectionCode,
+            tds_amount_override: tdsAmountOverride
         };
 
         try {
             const res = await fetch(`/api/expenses/${tallyState.currentExpenseId}/push-to-tally`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
+                method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
             });
             const data = await res.json();
-
             if (!res.ok) {
                 showPushStatus('error', data.error || 'Push failed');
                 btn.disabled = false;
@@ -4507,12 +5053,10 @@ console.log('📦 Server response:', result);
                 lucide.createIcons();
                 return;
             }
-
-            showPushStatus('success', `✅ Voucher pushed to Tally successfully! (${data.voucher_type} #${data.voucher_number || ''})`);
+            showPushStatus('success', `✅ Pushed! ${data.voucher_type} #${data.voucher_number || ''}`);
             btn.innerHTML = '✅ Pushed';
             setTimeout(() => {
                 closePushModal();
-                // Refresh the current view
                 if (typeof loadReviewItems === 'function') loadReviewItems();
                 if (typeof loadInvoices === 'function') loadInvoices();
             }, 1500);

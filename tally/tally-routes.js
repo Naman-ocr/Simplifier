@@ -93,18 +93,23 @@ router.post('/tally/config', async (req, res) => {
         const db = req.app.get('db');
         const {
             company_id, tally_url, tally_company_name,
-            narration_template, voucher_numbering, roundoff_ledger
+            narration_template, voucher_numbering, roundoff_ledger, tds_ledger,
+            records_inventory, enable_unit_conversion
         } = req.body;
         await dbRun(db, `
-            INSERT INTO tally_config (company_id, tally_url, tally_company_name, narration_template, voucher_numbering, roundoff_ledger)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tally_config (company_id, tally_url, tally_company_name, narration_template, voucher_numbering, roundoff_ledger, tds_ledger, records_inventory, enable_unit_conversion)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(company_id) DO UPDATE SET
                 tally_url = excluded.tally_url,
                 tally_company_name = excluded.tally_company_name,
                 narration_template = excluded.narration_template,
                 voucher_numbering = excluded.voucher_numbering,
-                roundoff_ledger = excluded.roundoff_ledger
-        `, [company_id, tally_url, tally_company_name, narration_template, voucher_numbering, roundoff_ledger]);
+                roundoff_ledger = excluded.roundoff_ledger,
+                tds_ledger = excluded.tds_ledger,
+                records_inventory = excluded.records_inventory,
+                enable_unit_conversion = excluded.enable_unit_conversion
+        `, [company_id, tally_url, tally_company_name, narration_template, voucher_numbering, roundoff_ledger,
+            tds_ledger || '', records_inventory ? 1 : 0, enable_unit_conversion ? 1 : 0]);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -418,6 +423,155 @@ router.post('/tally/stock-map', async (req, res) => {
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Expense ledger map (per description, for Journal/expense vouchers) ──────
+
+router.get('/tally/expense-ledger-map/:companyId', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const rows = await dbAll(db, 'SELECT * FROM tally_expense_ledger_map WHERE company_id = ? ORDER BY description', [req.params.companyId]);
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/tally/expense-ledger-map', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const { company_id, description, ledger_name } = req.body;
+        if (!description || !ledger_name) return res.status(400).json({ error: 'description and ledger_name required' });
+        await dbRun(db, `
+            INSERT INTO tally_expense_ledger_map (company_id, description, ledger_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(company_id, description) DO UPDATE SET ledger_name = excluded.ledger_name
+        `, [company_id, description.trim(), ledger_name]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── TDS section map ──────────────────────────────────────────────────────────
+
+router.get('/tally/tds-sections/:companyId', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const rows = await dbAll(db, 'SELECT * FROM tally_tds_section_map WHERE company_id = ? ORDER BY section_code', [req.params.companyId]);
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/tally/tds-sections', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const { company_id, mappings } = req.body; // [{section_code, section_name, default_rate, ledger_name}]
+        for (const m of mappings) {
+            if (!m.section_code || !m.ledger_name) continue;
+            await dbRun(db, `
+                INSERT INTO tally_tds_section_map (company_id, section_code, section_name, default_rate, ledger_name)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(company_id, section_code) DO UPDATE SET
+                    section_name = excluded.section_name,
+                    default_rate = excluded.default_rate,
+                    ledger_name = excluded.ledger_name
+            `, [company_id, m.section_code.trim(), m.section_name || '', parseFloat(m.default_rate) || 0, m.ledger_name]);
+        }
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.delete('/tally/tds-sections/:id', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        await dbRun(db, 'DELETE FROM tally_tds_section_map WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Unit map ─────────────────────────────────────────────────────────────────
+
+router.get('/tally/unit-map/:companyId', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const rows = await dbAll(db, 'SELECT * FROM tally_unit_map WHERE company_id = ? ORDER BY invoice_unit', [req.params.companyId]);
+        res.json(rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.post('/tally/unit-map', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const { company_id, invoice_unit, tally_unit, conversion_factor } = req.body;
+        if (!invoice_unit || !tally_unit) return res.status(400).json({ error: 'invoice_unit and tally_unit are required' });
+        await dbRun(db, `
+            INSERT INTO tally_unit_map (company_id, invoice_unit, tally_unit, conversion_factor)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(company_id, invoice_unit) DO UPDATE SET
+                tally_unit = excluded.tally_unit,
+                conversion_factor = excluded.conversion_factor
+        `, [company_id, invoice_unit.trim().toUpperCase(), tally_unit.trim(), parseFloat(conversion_factor) || 1.0]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+router.delete('/tally/unit-map/:id', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        await dbRun(db, 'DELETE FROM tally_unit_map WHERE id = ?', [req.params.id]);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Fetch units defined in Tally
+router.get('/tally/units', async (req, res) => {
+    try {
+        const db = req.app.get('db');
+        const companyId = req.query.company_id || 1;
+        const url = await getTallyUrl(db, companyId);
+
+        const xml = `<ENVELOPE>
+<HEADER><TALLYREQUEST>Export Data</TALLYREQUEST></HEADER>
+<BODY><EXPORTDATA><REQUESTDESC>
+<REPORTNAME>List of Accounts</REPORTNAME>
+<STATICVARIABLES>
+<SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+<ACCOUNTTYPE>Units</ACCOUNTTYPE>
+</STATICVARIABLES>
+</REQUESTDESC></EXPORTDATA></BODY></ENVELOPE>`;
+
+        const data = await postToTally(url, xml);
+        // Parse unit names — attribute or child tag
+        const units = [];
+        const seen = new Set();
+        const attrRe = /<UNIT\s[^>]*NAME="([^"]+)"/gi;
+        const childRe = /<UNITNAME>(.*?)<\/UNITNAME>/gi;
+        let m;
+        while ((m = attrRe.exec(data)) !== null) {
+            const v = m[1].trim();
+            if (v && !seen.has(v)) { seen.add(v); units.push(v); }
+        }
+        while ((m = childRe.exec(data)) !== null) {
+            const v = m[1].trim();
+            if (v && !seen.has(v)) { seen.add(v); units.push(v); }
+        }
+        res.json({ units: units.length ? units : ['Nos', 'Kgs', 'Mtr', 'Pcs', 'Box', 'Ltr', 'Set', 'Rmt', 'Sqm', 'Sqf', 'Pkt', 'Btl', 'Pair', 'Doz', 'Ton', 'Gms'] });
+    } catch (e) {
+        res.status(500).json({ error: e.message, units: ['Nos', 'Kgs', 'Mtr', 'Pcs', 'Box', 'Ltr', 'Set', 'Rmt', 'Sqm', 'Sqf', 'Pkt', 'Btl', 'Pair', 'Doz', 'Ton', 'Gms'] });
     }
 });
 
